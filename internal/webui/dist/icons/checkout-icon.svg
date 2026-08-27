@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="beaker" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#a78bfa"/>
+      <stop offset="0.55" stop-color="#7c9cff"/>
+      <stop offset="1" stop-color="#5eead4"/>
+    </linearGradient>
+    <radialGradient id="tile" cx="0.5" cy="0.32" r="0.9">
+      <stop offset="0" stop-color="#211c3a"/>
+      <stop offset="1" stop-color="#100e1c"/>
+    </radialGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#tile)"/>
+  <g transform="translate(96,76) scale(5)">
+    <path d="M13 17 L51 17 L37 38 L37 45 Q37 47.4 34.6 47.4 L29.4 47.4 Q27 47.4 27 45 L27 38 Z" fill="url(#beaker)"/>
+    <ellipse cx="32" cy="17" rx="19" ry="4.2" fill="#d8c9ff"/>
+    <path d="M32 49 C28.3 53.2 28.3 58 32 58 C35.7 58 35.7 53.2 32 49 Z" fill="#7fead4"/>
+  </g>
+</svg>

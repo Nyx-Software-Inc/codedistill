@@ -1,0 +1,393 @@
+:root {
+  --p-050505: #050505;
+  --p-050a05: #050a05;
+  --p-0a0a0a: #0a0a0a;
+  --p-0a0d12: #0a0d12;
+  --p-0a140a: #0a140a;
+  --p-0c0c0c: #0c0c0c;
+  --p-0d0d0d: #0d0d0d;
+  --p-0d1117: #0d1117;
+  --p-0f0f0f: #0f0f0f;
+  --p-101010: #101010;
+  --p-102010: #102010;
+  --p-10202a: #10202a;
+  --p-111111: #111111;
+  --p-131313: #131313;
+  --p-131a22: #131a22;
+  --p-141414: #141414;
+  --p-141826: #141826;
+  --p-142a1a: #142a1a;
+  --p-153a4a: #153a4a;
+  --p-161616: #161616;
+  --p-16222c: #16222c;
+  --p-181818: #181818;
+  --p-1a1a1a: #1a1a1a;
+  --p-1a2530: #1a2530;
+  --p-1a2a38: #1a2a38;
+  --p-1e1e1e: #1e1e1e;
+  --p-1e3040: #1e3040;
+  --p-1e3a52: #1e3a52;
+  --p-1e4a2e: #1e4a2e;
+  --p-1f1f1f: #1f1f1f;
+  --p-1f6f33: #1f6f33;
+  --p-205020: #205020;
+  --p-222222: #222222;
+  --p-223355: #223355;
+  --p-252525: #252525;
+  --p-262626: #262626;
+  --p-2a1010: #2a1010;
+  --p-2a1414: #2a1414;
+  --p-2a1e3a: #2a1e3a;
+  --p-2a2310: #2a2310;
+  --p-2a2a2a: #2a2a2a;
+  --p-2a3a2e: #2a3a2e;
+  --p-2a4a2a: #2a4a2a;
+  --p-2a4a6a: #2a4a6a;
+  --p-2d3a52: #2d3a52;
+  --p-2d5578: #2d5578;
+  --p-2d6840: #2d6840;
+  --p-333333: #333333;
+  --p-334455: #334455;
+  --p-33ff66: #33ff66;
+  --p-3a1a14: #3a1a14;
+  --p-3a1f1f: #3a1f1f;
+  --p-3a2222: #3a2222;
+  --p-3a2a2a: #3a2a2a;
+  --p-3a2f10: #3a2f10;
+  --p-3a3a3a: #3a3a3a;
+  --p-3a4a78: #3a4a78;
+  --p-3a5a7a: #3a5a7a;
+  --p-3a6890: #3a6890;
+  --p-4080b8: #4080b8;
+  --p-444444: #444444;
+  --p-4a2020: #4a2020;
+  --p-4a3a10: #4a3a10;
+  --p-4a3a14: #4a3a14;
+  --p-4a3a5a: #4a3a5a;
+  --p-4a6b8a: #4a6b8a;
+  --p-4caf50: #4caf50;
+  --p-553322: #553322;
+  --p-555555: #555555;
+  --p-5a1515: #5a1515;
+  --p-5a2a20: #5a2a20;
+  --p-5a3a10: #5a3a10;
+  --p-5a3e1a: #5a3e1a;
+  --p-5a4a18: #5a4a18;
+  --p-5a5a5a: #5a5a5a;
+  --p-5aa055: #5aa055;
+  --p-663333: #663333;
+  --p-666666: #666666;
+  --p-66aa99: #66aa99;
+  --p-66cc66: #66cc66;
+  --p-66ccff: #66ccff;
+  --p-6a5424: #6a5424;
+  --p-6a5a7a: #6a5a7a;
+  --p-732525: #732525;
+  --p-777777: #777777;
+  --p-7aa9c8: #7aa9c8;
+  --p-888888: #888888;
+  --p-999999: #999999;
+  --p-99aabb: #99aabb;
+  --p-99cc99: #99cc99;
+  --p-99ccff: #99ccff;
+  --p-99eebb: #99eebb;
+  --p-a78bfa: #a78bfa;
+  --p-aaaaaa: #aaaaaa;
+  --p-b04545: #b04545;
+  --p-b0b0b0: #b0b0b0;
+  --p-b26a00: #b26a00;
+  --p-b71c1c: #b71c1c;
+  --p-b8b8b8: #b8b8b8;
+  --p-bbbbbb: #bbbbbb;
+  --p-c084fc: #c084fc;
+  --p-c9a227: #c9a227;
+  --p-cc8888: #cc8888;
+  --p-cccccc: #cccccc;
+  --p-ccddee: #ccddee;
+  --p-cceeff: #cceeff;
+  --p-d0d0d0: #d0d0d0;
+  --p-d4a54d: #d4a54d;
+  --p-d8b4fe: #d8b4fe;
+  --p-d8d8d8: #d8d8d8;
+  --p-d8fdd0: #d8fdd0;
+  --p-dddddd: #dddddd;
+  --p-ddeeff: #ddeeff;
+  --p-e07a7a: #e07a7a;
+  --p-e0e0e0: #e0e0e0;
+  --p-e6e6e6: #e6e6e6;
+  --p-e7b86c: #e7b86c;
+  --p-e9d5ff: #e9d5ff;
+  --p-eeeeee: #eeeeee;
+  --p-f0a090: #f0a090;
+  --p-f0d080: #f0d080;
+  --p-ff8888: #ff8888;
+  --p-ff9800: #ff9800;
+  --p-ffc56c: #ffc56c;
+  --p-ffcc66: #ffcc66;
+  --p-ffcccc: #ffcccc;
+  --p-ffdddd: #ffdddd;
+  --p-ffe1a3: #ffe1a3;
+  --p-ffeedd: #ffeedd;
+  --p-ffffff: #ffffff;
+  /* Uniform code-block canvas. Owns the background for every Shiki/plain
+     code window; flips with the theme so the editor reads black-on-light
+     or light-on-dark without per-token background painting. */
+  --code-bg: #0d1117;
+}
+
+/* Light theme: uniform lightness-flip of the dark palette (hue and
+   saturation preserved), hand-tuned where noted. Contrast pairs survive
+   the flip because both sides invert together. data-theme is the
+   RESOLVED theme — App.svelte resolves "system" before setting it. */
+:root[data-theme='light'] {
+  --code-bg: #ffffff;
+  --p-050505: #fafafa;
+  --p-050a05: #f5faf5;
+  --p-0a0a0a: #f5f5f5;
+  --p-0a0d12: #edf0f5;
+  --p-0a140a: #ebf5eb;
+  --p-0c0c0c: #f3f3f3;
+  --p-0d0d0d: #f2f2f2;
+  --p-0d1117: #e8ecf2;
+  --p-0f0f0f: #f0f0f0;
+  --p-101010: #efefef;
+  --p-102010: #dfefdf;
+  --p-10202a: #d5e5ef;
+  --p-111111: #eeeeee;
+  --p-131313: #ececec;
+  --p-131a22: #dde4ec;
+  --p-141414: #ebebeb;
+  --p-141826: #d9ddeb;
+  --p-142a1a: #d5ebdb;
+  --p-153a4a: #b5daea;
+  --p-161616: #e9e9e9;
+  --p-16222c: #d3dfe9;
+  --p-181818: #e7e7e7;
+  --p-1a1a1a: #e5e5e5;
+  --p-1a2530: #cfdae5;
+  --p-1a2a38: #c7d7e5;
+  --p-1e1e1e: #e1e1e1;
+  --p-1e3040: #bfd1e1;
+  --p-1e3a52: #adc9e1;
+  --p-1e4a2e: #b5e1c5;
+  --p-1f1f1f: #e0e0e0;
+  --p-1f6f33: #90e0a4;
+  --p-205020: #afdfaf;
+  --p-222222: #dddddd;
+  --p-223355: #aabbdd;
+  --p-252525: #dadada;
+  --p-262626: #d9d9d9;
+  --p-2a1010: #efd5d5;
+  --p-2a1414: #ebd5d5;
+  --p-2a1e3a: #d1c5e1;
+  --p-2a2310: #efe8d5;
+  --p-2a2a2a: #d5d5d5;
+  --p-2a3a2e: #c5d5c9;
+  --p-2a4a2a: #b5d5b5;
+  --p-2a4a6a: #95b5d5;
+  --p-2d3a52: #adbad2;
+  --p-2d5578: #87afd2;
+  --p-2d6840: #97d2aa;
+  --p-333333: #cccccc;
+  --p-334455: #aabbcc;
+  --p-33ff66: #00cc33;
+  --p-3a1a14: #ebcbc5;
+  --p-3a1f1f: #e0c5c5;
+  --p-3a2222: #ddc5c5;
+  --p-3a2a2a: #d5c5c5;
+  --p-3a2f10: #efe4c5;
+  --p-3a3a3a: #c5c5c5;
+  --p-3a4a78: #8797c5;
+  --p-3a5a7a: #85a5c5;
+  --p-3a6890: #6f9dc5;
+  --p-4080b8: #4787bf;
+  --p-444444: #bbbbbb;
+  --p-4a2020: #dfb5b5;
+  --p-4a3a10: #efdfb5;
+  --p-4a3a14: #ebdbb5;
+  --p-4a3a5a: #b5a5c5;
+  --p-4a6b8a: #7596b5;
+  --p-4caf50: #50b354;
+  --p-553322: #ddbbaa;
+  --p-555555: #aaaaaa;
+  --p-5a1515: #eaa5a5;
+  --p-5a2a20: #dfafa5;
+  --p-5a3a10: #efcfa5;
+  --p-5a3e1a: #e5c9a5;
+  --p-5a4a18: #e7d7a5;
+  --p-5a5a5a: #a5a5a5;
+  --p-5aa055: #64aa5f;
+  --p-663333: #cc9999;
+  --p-666666: #999999;
+  --p-66aa99: #559988;
+  --p-66cc66: #339933;
+  --p-66ccff: #006699;
+  --p-6a5424: #dbc595;
+  --p-6a5a7a: #9585a5;
+  --p-732525: #da8c8c;
+  --p-777777: #888888;
+  --p-7aa9c8: #376685;
+  --p-888888: #777777;
+  --p-999999: #666666;
+  --p-99aabb: #445566;
+  --p-99cc99: #336633;
+  --p-99ccff: #003366;
+  --p-99eebb: #116633;
+  --p-a78bfa: #210574;
+  --p-aaaaaa: #555555;
+  --p-b04545: #ba4f4f;
+  --p-b0b0b0: #4f4f4f;
+  --p-b26a00: #ffb74d;
+  --p-b71c1c: #e34848;
+  --p-b8b8b8: #474747;
+  --p-bbbbbb: #444444;
+  --p-c084fc: #3f037b;
+  --p-c9a227: #d8b136;
+  --p-cc8888: #773333;
+  --p-cccccc: #333333;
+  --p-ccddee: #112233;
+  --p-cceeff: #002233;
+  --p-d0d0d0: #2f2f2f;
+  --p-d4a54d: #b2832b;
+  --p-d8b4fe: #25014b;
+  --p-d8d8d8: #272727;
+  --p-d8fdd0: #0a2f02;
+  --p-dddddd: #222222;
+  --p-ddeeff: #001122;
+  --p-e07a7a: #851f1f;
+  --p-e0e0e0: #1f1f1f;
+  --p-e6e6e6: #191919;
+  --p-e7b86c: #936418;
+  --p-e9d5ff: #14002a;
+  --p-eeeeee: #111111;
+  --p-f0a090: #6f1f0f;
+  --p-f0d080: #7f5f0f;
+  --p-ff8888: #770000;
+  --p-ff9800: #ff9800;
+  --p-ffc56c: #935900;
+  --p-ffcc66: #996600;
+  --p-ffcccc: #330000;
+  --p-ffdddd: #220000;
+  --p-ffe1a3: #5c3e00;
+  --p-ffeedd: #221100;
+  --p-ffffff: #000000;
+}
+
+:root {
+  font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  color: var(--p-e0e0e0);
+  background: var(--p-1a1a1a);
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #app {
+  height: 100%;
+  margin: 0;
+}
+
+button {
+  background: var(--p-2a2a2a);
+  color: var(--p-e0e0e0);
+  border: 1px solid var(--p-444444);
+  padding: 4px 10px;
+  cursor: pointer;
+  border-radius: 3px;
+  font-size: 12px;
+  font-family: inherit;
+}
+button:hover { background: var(--p-3a3a3a); }
+/* Press feedback (UC-35): an immediate, browser-native "click registered" cue
+   on every button. Higher specificity than a single class, so it lights up even
+   on custom-styled buttons; the slight nudge adds a tactile press. No transition
+   so it's instant (well under the 200ms the UX calls for). */
+button:active:not(:disabled) { background: var(--p-5a5a5a); transform: translateY(1px); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+textarea, input, select {
+  background: var(--p-2a2a2a);
+  color: var(--p-e0e0e0);
+  border: 1px solid var(--p-444444);
+  padding: 6px 10px;
+  border-radius: 3px;
+  font-family: inherit;
+  font-size: inherit;
+}
+textarea:focus, input:focus, select:focus {
+  outline: none;
+  border-color: var(--p-66ccff);
+}
+
+/* Global thin scrollbars in the same VS Code-ish vein the user picked for
+   the code-canvas tabs. Track is invisible; thumb is a quiet grey that
+   brightens on direct hover. Vertical bars get 6px (need enough width to
+   grab and drag long content); horizontal bars get 4px. Tab strips opt
+   into the .tab-scroll override below for an even thinner 1px line. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--p-2a2a2a) transparent;
+}
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 4px;
+}
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: var(--p-2a2a2a);
+  border-radius: 0;
+}
+*::-webkit-scrollbar-thumb:hover { background: var(--p-5a5a5a); }
+
+/* Tab strip override — 1px hairline (the user explicitly asked for this
+   on the code-canvas + drawer minor tabs). */
+.tab-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.tab-scroll::-webkit-scrollbar { height: 1px; }
+.tab-scroll:hover::-webkit-scrollbar-thumb { background: var(--p-3a3a3a); }
+
+/* Hidden easter-egg theme — activated by App.svelte when the active
+   scratchpad's name matches a known trigger (currently "42"). Partial
+   override on top of the default palette: monospace everywhere, matrix
+   green foreground, near-black background, faint CRT glow. */
+.theme-matrix,
+.theme-matrix * {
+  font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace !important;
+}
+.theme-matrix {
+  background: var(--p-050a05) !important;
+  color: var(--p-33ff66) !important;
+  text-shadow: 0 0 2px rgba(51, 255, 102, 0.45);
+}
+.theme-matrix button,
+.theme-matrix textarea,
+.theme-matrix input,
+.theme-matrix select {
+  background: var(--p-0a140a) !important;
+  color: var(--p-33ff66) !important;
+  border-color: var(--p-1f6f33) !important;
+}
+.theme-matrix button:hover { background: var(--p-102010) !important; }
+.theme-matrix *::-webkit-scrollbar-thumb { background: var(--p-1f6f33) !important; }
+.theme-matrix *::-webkit-scrollbar-thumb:hover { background: var(--p-33ff66) !important; }
+
+/* Shiki dual-theme selection: codeToHtml (defaultColor:false) emits
+   --shiki-dark/--shiki-light vars per token span; the resolved theme
+   attribute picks which token COLOR renders. The background is owned by a
+   single themed --code-bg on the block (NOT per-span) so the canvas is
+   uniform whether or not a line has text — otherwise light-mode tokens
+   paint white rectangles on a grey gutter. */
+:root[data-theme='dark'] .shiki,
+:root[data-theme='dark'] .shiki span {
+  color: var(--shiki-dark);
+}
+:root[data-theme='light'] .shiki,
+:root[data-theme='light'] .shiki span {
+  color: var(--shiki-light);
+}
+.shiki { background-color: var(--code-bg); }

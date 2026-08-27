@@ -1,0 +1,25 @@
+-- =============================================================================
+--  Copyright (c) 2026 Nyx Software, Inc.  All rights reserved.
+--
+--  CodeDistill
+--
+--  Property of Nyx Software, Inc., provided under a dual license: the GNU Affero General
+--  Public License v3.0 (see the LICENSE file) and, separately, a commercial
+--  license available from Nyx Software, Inc. Use outside the terms of one of those
+--  licenses is prohibited.
+--
+--  SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Nyx-Commercial
+-- =============================================================================
+
+-- v0.11.x — per-criterion test mapping (glass-box Phase 3, slice 2).
+--
+-- A criterion gains the shell command that proves it (e.g.
+-- "go test -run TestExportButton ./internal/ui"). The verification service runs
+-- it in an isolated worktree at the item's recorded commit; exit 0 advances the
+-- criterion to satisfied (+ satisfied_by), non-zero to failed — closing the
+-- Phase-2 seam. The mapping is agent-authored (gold) via MCP map_criterion_test,
+-- or hand-set later. Empty = no per-criterion check (item-level run only).
+--
+-- One command per criterion; run several tests in one via -run 'A|B'. Setting it
+-- implies verification_kind='test' (the caller sets that alongside).
+ALTER TABLE acceptance_criteria ADD COLUMN test_command TEXT NOT NULL DEFAULT '';

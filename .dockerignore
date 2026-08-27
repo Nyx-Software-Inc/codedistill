@@ -1,0 +1,34 @@
+# Keep the docker build context small — copying the whole repo is
+# fine, but exclude the obvious heavy bits and developer-local
+# state.
+
+# Built artifacts (rebuilt inside the container)
+/codedistill
+/codedistill.db
+/codedistill.db.blobs/
+/dist/
+/internal/webui/dist/
+
+# Local dev DB
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Dependencies — re-fetched inside the container stages
+**/node_modules/
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Don't leak local jenkins config or git internals if they exist
+.jenkins/
+
+# NOTE: web/public/excalidraw/ is the vendored React+Excalidraw
+# iframe wrapper. It's needed at build time (the SPA's vite copies
+# /public into the dist), so it must NOT be excluded.
+# Same goes for web/excalidraw-iframe/ — the wrapper's npm
+# sub-project. We don't rebuild it inside the container; we use
+# the pre-built bundle from web/public/excalidraw/.

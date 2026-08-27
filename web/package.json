@@ -1,0 +1,25 @@
+{
+  "name": "codedistill-web",
+  "private": true,
+  "version": "0.21.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "svelte-check --tsconfig ./tsconfig.json"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^4.0.0",
+    "@tsconfig/svelte": "^5.0.4",
+    "svelte": "^5.0.0",
+    "svelte-check": "^4.0.0",
+    "typescript": "^5.5.0",
+    "vite": "^5.4.0",
+    "vite-plugin-pwa": "^1.3.0"
+  },
+  "dependencies": {
+    "carta-md": "^4.11.2",
+    "shiki": "^4.0.2"
+  }
+}

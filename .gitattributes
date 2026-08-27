@@ -1,0 +1,11 @@
+# Generated / vendored paths. Marked linguist-generated so GitHub language
+# stats ignore them — and so CodeDistill's code metrics exclude them from the
+# headline churn + change-complexity (see internal/git/gitattributes.go).
+internal/webui/dist/** linguist-generated=true
+*.min.js linguist-generated=true
+*.min.css linguist-generated=true
+# Vendored third-party asset bundles (the Excalidraw drawing library shipped in
+# web/public) and the generated OSS mirror — not our source, keep them out of
+# the code metrics + the code index.
+web/public/excalidraw/** linguist-vendored=true
+dist/oss-mirror/** linguist-generated=true

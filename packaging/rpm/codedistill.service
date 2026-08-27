@@ -1,0 +1,47 @@
+# systemd USER unit — runs as the desktop user, not root.
+# Activate with:
+#   systemctl --user enable --now codedistill
+# Status / logs:
+#   systemctl --user status codedistill
+#   journalctl --user -u codedistill -f
+#
+# DB + blob storage land under $XDG_DATA_HOME/codedistill/
+# (typically ~/.local/share/codedistill/). The directory is
+# created on first run if it doesn't exist.
+
+[Unit]
+Description=CodeDistill — scratchpad capture funnel
+After=network.target
+# Don't tie the user session lifetime to this unit; if the user
+# logs out, the daemon stops with their session.
+
+[Service]
+Type=simple
+# StateDirectory is a systemd convenience: creates
+# $XDG_STATE_HOME/codedistill on first start, owned by the user.
+# DB defaults to $STATE_DIRECTORY/codedistill.db; blobs land
+# alongside.
+StateDirectory=codedistill
+Environment=CODEDISTILL_DATA=%S/codedistill
+ExecStart=/opt/CodeDistill/bin/codedistill -addr 127.0.0.1:8080 -db %S/codedistill/codedistill.db serve
+Restart=on-failure
+RestartSec=3
+
+# Sane resource caps for a desktop daemon. Generous enough that
+# the blob GC sweeper and matcher don't trip them in normal use;
+# tight enough that runaway behavior gets caught.
+LimitNOFILE=4096
+MemoryHigh=2G
+MemoryMax=4G
+
+# Hardening — none of these should affect normal operation since
+# we don't write outside the state directory, don't open privileged
+# ports, and don't need elevated capabilities.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%S/codedistill
+
+[Install]
+WantedBy=default.target

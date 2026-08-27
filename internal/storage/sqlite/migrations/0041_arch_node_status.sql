@@ -1,0 +1,22 @@
+-- =============================================================================
+--  Copyright (c) 2026 Nyx Software, Inc.  All rights reserved.
+--
+--  CodeDistill
+--
+--  Property of Nyx Software, Inc., provided under a dual license: the GNU Affero General
+--  Public License v3.0 (see the LICENSE file) and, separately, a commercial
+--  license available from Nyx Software, Inc. Use outside the terms of one of those
+--  licenses is prohibited.
+--
+--  SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Nyx-Commercial
+-- =============================================================================
+
+-- v0.12.x — architecture-as-governance (glass-box Phase 6).
+--
+-- Persist each node's last-computed as-built status ('matched' | 'missing' |
+-- 'unmapped' | '') so the governance gate can consult it cheaply without the git
+-- file-tree (the pure governance package + the MCP gate path have no git). It's
+-- refreshed whenever the architecture delta is computed (the diagram is viewed).
+-- A 'missing' node means the diagram claims something the code doesn't have — a
+-- gate can block completion while the architecture is provably lying.
+ALTER TABLE architecture_nodes ADD COLUMN last_status TEXT NOT NULL DEFAULT '';
