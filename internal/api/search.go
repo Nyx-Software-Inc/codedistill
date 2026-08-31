@@ -147,4 +147,3 @@ func (s *Server) search(embedder Embedder) http.HandlerFunc {
 		writeJSON(w, http.StatusOK, searchResponse{Hits: hits, Scanned: len(cands)})
 	}
 }
-

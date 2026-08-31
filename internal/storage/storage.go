@@ -48,21 +48,22 @@ var ErrConflict = errors.New("conflict")
 type EmbeddableTable string
 
 const (
-	TableScratchpadItems   EmbeddableTable = "scratchpad_items"
-	TableTodoItems         EmbeddableTable = "todo_items"
-	TableBugItems          EmbeddableTable = "bug_items"
-	TableKnowledgeEntries  EmbeddableTable = "knowledge_entries"
-	TableUseCaseItems      EmbeddableTable = "use_case_items"
+	TableScratchpadItems  EmbeddableTable = "scratchpad_items"
+	TableTodoItems        EmbeddableTable = "todo_items"
+	TableBugItems         EmbeddableTable = "bug_items"
+	TableKnowledgeEntries EmbeddableTable = "knowledge_entries"
+	TableUseCaseItems     EmbeddableTable = "use_case_items"
 )
 
 // EmbeddingTarget pairs a row id with the canonical text the embedder
 // should consume for that type. ListUnembedded fills both so the caller
 // can iterate without re-fetching full rows. Per-table text composition:
-//   scratchpad_items: content
-//   todo_items:       subject + "\n\n" + notes
-//   bug_items:        subject + "\n\n" + notes
-//   knowledge_entries:title + "\n\n" + content
-//   use_case_items:   subject + "\n\n" + description
+//
+//	scratchpad_items: content
+//	todo_items:       subject + "\n\n" + notes
+//	bug_items:        subject + "\n\n" + notes
+//	knowledge_entries:title + "\n\n" + content
+//	use_case_items:   subject + "\n\n" + description
 type EmbeddingTarget struct {
 	ID   string
 	Text string

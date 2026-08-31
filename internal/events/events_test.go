@@ -113,7 +113,7 @@ loop:
 
 func TestBusNilReceiverPublishIsNoOp(t *testing.T) {
 	// Servers wired without an events.Bus should be safe to call.
-	var b *Bus // nil
+	var b *Bus              // nil
 	b.Publish(ItemsChanged) // must not panic
 }
 

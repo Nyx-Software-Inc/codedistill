@@ -1,6 +1,47 @@
-import { defineConfig } from 'vite';
+// =============================================================================
+//  Copyright (c) 2026 Nyx Software, Inc.  All rights reserved.
+//
+//  CodeDistill
+//
+//  Property of Nyx Software, Inc., provided under a dual license: the GNU Affero General
+//  Public License v3.0 (see the LICENSE file) and, separately, a commercial
+//  license available from Nyx Software, Inc. Use outside the terms of one of those
+//  licenses is prohibited.
+//
+//  SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Nyx-Commercial
+// =============================================================================
+import { defineConfig, type Plugin } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { VitePWA } from 'vite-plugin-pwa';
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
+// Dev-only. The Go server's app-shell handler is what stamps the cd_auth
+// cookie the SPA authenticates writes with; under `vite dev` Vite serves the
+// shell instead, so the app loads unauthenticated and every write 401s —
+// Settings → Server access can't even list the token. Read the same file the
+// server reads (main.go apiTokenFilePath) and stamp it ourselves. `apply:
+// 'serve'` keeps this out of every build; the token never leaves this machine.
+function devAuthCookie(): Plugin {
+  return {
+    name: 'codedistill-dev-auth-cookie',
+    apply: 'serve',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        // Only the shell needs it; /api is proxied and forwards the cookie.
+        if (req.url?.startsWith('/api')) return next();
+        try {
+          const tok = readFileSync(join(homedir(), '.config', 'codedistill', 'api-token'), 'utf8').trim();
+          if (tok) res.setHeader('Set-Cookie', `cd_auth=${tok}; Path=/; SameSite=Lax`);
+        } catch {
+          // No token file (or -no-auth): leave the request unauthenticated.
+        }
+        next();
+      });
+    },
+  };
+}
 
 // Vite builds the SPA into ../internal/webui/dist so the Go binary can
 // embed it via `//go:embed all:dist` (see internal/webui/embed.go).
@@ -14,6 +55,7 @@ import { VitePWA } from 'vite-plugin-pwa';
 // never touched by the SW.
 export default defineConfig({
   plugins: [
+    devAuthCookie(),
     svelte(),
     VitePWA({
       // autoUpdate: a new build skip-waits + claims clients immediately, and

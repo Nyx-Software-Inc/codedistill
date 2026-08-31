@@ -23,7 +23,7 @@ import (
 // An implemented item that touches an always-review zone is escalated to High
 // and flagged in the review queue.
 func TestReviewQueue_ZoneEscalates(t *testing.T) {
-	srv, ag := setup(t)
+	srv, ag, store := setupWithStore(t)
 
 	var p domain.Project
 	doJSON(t, srv, "POST", "/api/v1/projects", map[string]string{"name": "p"}, 201, &p)
@@ -45,10 +45,9 @@ func TestReviewQueue_ZoneEscalates(t *testing.T) {
 	}
 
 	// Record an implementation: a commit + a file in the auth zone.
-	doJSON(t, srv, "POST", "/api/v1/bugs/"+bugID+"/code-anchors",
-		map[string]any{"kind": "commit", "revision": "abcd1234"}, 201, nil)
-	doJSON(t, srv, "POST", "/api/v1/bugs/"+bugID+"/code-anchors",
-		map[string]any{"kind": "file", "path": "internal/auth/login.go", "revision": "abcd1234"}, 201, nil)
+	seedCodeAnchor(t, store, "bug_item", bugID, domain.CodeAnchor{Kind: "commit", Revision: "abcd1234"})
+	seedCodeAnchor(t, store, "bug_item", bugID, domain.CodeAnchor{
+		Kind: "file", Path: "internal/auth/login.go", Revision: "abcd1234"})
 
 	var resp reviewQueueResp
 	doJSON(t, srv, "GET", "/api/v1/projects/"+p.ID+"/review-queue", nil, 200, &resp)
@@ -70,7 +69,7 @@ func TestReviewQueue_ZoneEscalates(t *testing.T) {
 // A new project (no verification track record) is untrusting: a Medium-risk
 // unverified change escalates, and the response reports New trust.
 func TestReviewQueue_NewTrustEscalates(t *testing.T) {
-	srv, ag := setup(t)
+	srv, ag, store := setupWithStore(t)
 	var p domain.Project
 	doJSON(t, srv, "POST", "/api/v1/projects", map[string]string{"name": "p"}, 201, &p)
 	var sp domain.Scratchpad
@@ -83,8 +82,7 @@ func TestReviewQueue_NewTrustEscalates(t *testing.T) {
 	doJSON(t, srv, "GET", "/api/v1/items/"+item.ID, nil, 200, &got)
 
 	// Implemented (commit), unverified, no zone → Medium risk.
-	doJSON(t, srv, "POST", "/api/v1/bugs/"+got.DerivedItemID+"/code-anchors",
-		map[string]any{"kind": "commit", "revision": "abcd1234"}, 201, nil)
+	seedCodeAnchor(t, store, "bug_item", got.DerivedItemID, domain.CodeAnchor{Kind: "commit", Revision: "abcd1234"})
 
 	var resp reviewQueueResp
 	doJSON(t, srv, "GET", "/api/v1/projects/"+p.ID+"/review-queue", nil, 200, &resp)
@@ -99,7 +97,7 @@ func TestReviewQueue_NewTrustEscalates(t *testing.T) {
 // A human approval clears an escalated item from the queue (closing the loop),
 // and a rejection flags it for rework.
 func TestReviewQueue_HumanDecision(t *testing.T) {
-	srv, ag := setup(t)
+	srv, ag, store := setupWithStore(t)
 	var p domain.Project
 	doJSON(t, srv, "POST", "/api/v1/projects", map[string]string{"name": "p"}, 201, &p)
 	doJSON(t, srv, "PUT", "/api/v1/projects/"+p.ID+"/settings/review.always_review_zones",
@@ -113,10 +111,9 @@ func TestReviewQueue_HumanDecision(t *testing.T) {
 	var got domain.ScratchpadItem
 	doJSON(t, srv, "GET", "/api/v1/items/"+item.ID, nil, 200, &got)
 	bugID := got.DerivedItemID
-	doJSON(t, srv, "POST", "/api/v1/bugs/"+bugID+"/code-anchors",
-		map[string]any{"kind": "commit", "revision": "abcd1234"}, 201, nil)
-	doJSON(t, srv, "POST", "/api/v1/bugs/"+bugID+"/code-anchors",
-		map[string]any{"kind": "file", "path": "internal/auth/x.go", "revision": "abcd1234"}, 201, nil)
+	seedCodeAnchor(t, store, "bug_item", bugID, domain.CodeAnchor{Kind: "commit", Revision: "abcd1234"})
+	seedCodeAnchor(t, store, "bug_item", bugID, domain.CodeAnchor{
+		Kind: "file", Path: "internal/auth/x.go", Revision: "abcd1234"})
 
 	// Starts escalated (zone).
 	var resp reviewQueueResp

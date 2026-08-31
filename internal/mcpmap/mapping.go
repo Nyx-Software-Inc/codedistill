@@ -20,12 +20,12 @@
 // "create_an_issue", and we don't want to hard-code that.
 //
 // Two paths produce a Mapping:
-//   1. Suggest — feed the destination's catalog (from
-//      mcpclient.ListTools) to an LLM (Ollama) and ask it which tool
-//      implements each operation. Cheap, often-right, occasionally
-//      wrong. Empty string = "I don't know."
-//   2. Manual override — the user picks the tool for an operation in
-//      the settings UI. Wins over the LLM suggestion on collision.
+//  1. Suggest — feed the destination's catalog (from
+//     mcpclient.ListTools) to an LLM (Ollama) and ask it which tool
+//     implements each operation. Cheap, often-right, occasionally
+//     wrong. Empty string = "I don't know."
+//  2. Manual override — the user picks the tool for an operation in
+//     the settings UI. Wins over the LLM suggestion on collision.
 //
 // Operations with an empty mapping are *unavailable* for that
 // destination — the export queue worker drops or fails the op rather

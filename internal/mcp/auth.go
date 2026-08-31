@@ -30,16 +30,26 @@ const writeAuthKey ctxKey = 1
 const mcpAuthCookie = "cd_auth"
 
 // AuthContextFunc returns an mcp-go HTTPContextFunc that records, per HTTP
-// request, whether the caller may invoke WRITE tools. token is the server's
-// API write-auth token (empty disables the gate). READS are never gated —
+// request, whether the caller may invoke WRITE tools. READS are never gated —
 // "MCP read free, MCP write paid." The stdio transport never invokes this,
 // so stdio sessions carry no marker and are treated as trusted-local
 // (writeAuthorized → true), matching the first-party UI: local channels are
 // trusted; the network needs the token.
-func AuthContextFunc(token string) func(context.Context, *http.Request) context.Context {
+//
+// token is a GETTER, resolved on every request, and that is the whole point:
+// it used to be a captured string, which meant an admin rotating the token
+// through Settings → Server access left this closure holding the OLD value.
+// Measured on a live server: after a rotation the revoked token still
+// authorized every MCP write tool while the new token was refused, until the
+// process restarted. A nil getter, or one returning "", disables the gate.
+func AuthContextFunc(token func() string) func(context.Context, *http.Request) context.Context {
 	return func(ctx context.Context, r *http.Request) context.Context {
-		ok := token == "" ||
-			subtle.ConstantTimeCompare([]byte(requestToken(r)), []byte(token)) == 1
+		want := ""
+		if token != nil {
+			want = token()
+		}
+		ok := want == "" ||
+			subtle.ConstantTimeCompare([]byte(requestToken(r)), []byte(want)) == 1
 		return context.WithValue(ctx, writeAuthKey, ok)
 	}
 }

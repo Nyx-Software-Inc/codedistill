@@ -21,8 +21,8 @@ func TestMatchesZone(t *testing.T) {
 		path string
 		want bool
 	}{
-		{"internal/auth/handler.go", true},   // segment
-		{"auth/login.go", true},              // leading segment
+		{"internal/auth/handler.go", true},     // segment
+		{"auth/login.go", true},                // leading segment
 		{"db/migrations/0001.sql", true},       // prefix
 		{"internal/db/migrations/x.sql", true}, // multi-segment pattern matches anywhere
 		{"go.sum", false},

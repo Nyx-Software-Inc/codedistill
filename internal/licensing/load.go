@@ -21,6 +21,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -42,6 +43,20 @@ func ResolvePath(flagPath, dbPath string) (path string, found bool) {
 	if env := os.Getenv("CODEDISTILL_LICENSE"); env != "" {
 		return env, fileExists(env)
 	}
+	// A DSN is not a filesystem path, and must not be run through filepath.Dir.
+	// Doing so both invented a nonsensical location and — because Dir keeps the
+	// userinfo — put the database PASSWORD into the path, which Load then embeds
+	// in the not-found reason that `license status` prints to the terminal. Fall
+	// back to the user config dir, which is where a server deployment's license
+	// belongs anyway.
+	if isDSN(dbPath) {
+		if dir, err := os.UserConfigDir(); err == nil {
+			cfg := filepath.Join(dir, "codedistill", FileName)
+			return cfg, fileExists(cfg)
+		}
+		return FileName, fileExists(FileName)
+	}
+
 	sibling := filepath.Join(filepath.Dir(dbPath), FileName)
 	if fileExists(sibling) {
 		return sibling, true
@@ -54,6 +69,12 @@ func ResolvePath(flagPath, dbPath string) (path string, found bool) {
 	}
 	return sibling, false
 }
+
+// isDSN reports whether p is a database connection string rather than a file
+// path. Deliberately scheme-agnostic — cmd/codedistill checks specifically for
+// postgres:// and postgresql://, but anything with a scheme is not a path, and
+// a backend added later must not silently reintroduce the credential leak.
+func isDSN(p string) bool { return strings.Contains(p, "://") }
 
 func fileExists(p string) bool {
 	info, err := os.Stat(p)

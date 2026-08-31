@@ -65,7 +65,7 @@ func (s *Server) recordReviewForOwner(ownerType string) http.HandlerFunc {
 			}
 		}
 		if err := s.store.CreateReviewDecision(r.Context(), d); err != nil {
-			writeErr(w, http.StatusInternalServerError, err)
+			writeErr(w, statusFor(err), err)
 			return
 		}
 		// Approving the change resolves any active review flags on it — the human

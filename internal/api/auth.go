@@ -38,7 +38,7 @@ func (s *Server) requireWriteAuth(next http.Handler) http.Handler {
 		// A resolved per-user token or session is an authenticated identity →
 		// authorized to write (multi-user). Else fall back to the legacy shared
 		// token (single-user); reads are always open.
-		if s.tokenValue() == "" || isReadMethod(r.Method) || isAuthenticated(r.Context()) || s.validToken(r) {
+		if s.TokenValue() == "" || isReadMethod(r.Method) || isAuthenticated(r.Context()) || s.validToken(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -64,7 +64,7 @@ func (s *Server) validToken(r *http.Request) bool {
 	if got == "" {
 		return false
 	}
-	return subtle.ConstantTimeCompare([]byte(got), []byte(s.tokenValue())) == 1
+	return subtle.ConstantTimeCompare([]byte(got), []byte(s.TokenValue())) == 1
 }
 
 // getAuthToken reveals the current API token to an AUTHENTICATED caller —
@@ -72,7 +72,7 @@ func (s *Server) validToken(r *http.Request) bool {
 // otherwise open), it self-enforces auth because it returns a secret; the
 // first-party SPA passes via its cd_auth cookie.
 func (s *Server) getAuthToken(w http.ResponseWriter, r *http.Request) {
-	if s.tokenValue() == "" {
+	if s.TokenValue() == "" {
 		writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
 		return
 	}
@@ -80,7 +80,7 @@ func (s *Server) getAuthToken(w http.ResponseWriter, r *http.Request) {
 		writeMsg(w, http.StatusUnauthorized, "authenticate to view the API token")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"enabled": true, "token": s.tokenValue()})
+	writeJSON(w, http.StatusOK, map[string]any{"enabled": true, "token": s.TokenValue()})
 }
 
 // regenerateAuthToken rotates the token: persists the new one, swaps it in
@@ -88,7 +88,7 @@ func (s *Server) getAuthToken(w http.ResponseWriter, r *http.Request) {
 // while any client still holding the old token is kicked. Write-gated by
 // the middleware (caller must present the current credential).
 func (s *Server) regenerateAuthToken(w http.ResponseWriter, r *http.Request) {
-	if s.tokenValue() == "" {
+	if s.TokenValue() == "" {
 		writeMsg(w, http.StatusBadRequest, "write-auth is disabled (-no-auth) — nothing to regenerate")
 		return
 	}

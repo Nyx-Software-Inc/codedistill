@@ -111,7 +111,7 @@ func (s *Server) createCustomFieldDef(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.store.CreateCustomFieldDef(r.Context(), d); err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
+		writeErr(w, statusFor(err), err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, d)

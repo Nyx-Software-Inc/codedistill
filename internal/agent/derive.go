@@ -117,6 +117,10 @@ func deriveItem(
 		}
 		createErr = store.CreateUseCaseItem(ctx, &domain.UseCaseItem{
 			ID: id, ProjectID: projectID, SourceItemID: item.ID,
+			// Same nlmeta extraction todos already get — `priority` is computed
+			// above for every capture regardless of category, and the use-case
+			// branch simply never used it (migration 0062).
+			Priority:    priority,
 			Subject:     ucSubject,
 			Description: item.Content, // original paste preserved verbatim
 			Role:        result.Role,

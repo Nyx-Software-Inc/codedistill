@@ -21,12 +21,12 @@ func TestAssessTrustTiers(t *testing.T) {
 		tier          string
 		band          Band
 	}{
-		{0, 0, "New", Medium},     // no evidence
-		{3, 0, "New", Medium},     // too little volume
-		{8, 2, "Building", High},  // enough volume, 80% clean
-		{6, 4, "New", Medium},     // 60% clean — poor rate keeps it untrusting
+		{0, 0, "New", Medium},       // no evidence
+		{3, 0, "New", Medium},       // too little volume
+		{8, 2, "Building", High},    // enough volume, 80% clean
+		{6, 4, "New", Medium},       // 60% clean — poor rate keeps it untrusting
 		{20, 1, "Earned", Critical}, // high volume + ~95% clean
-		{14, 0, "Building", High}, // 100% clean but just under the Earned volume bar
+		{14, 0, "Building", High},   // 100% clean but just under the Earned volume bar
 	}
 	for _, c := range cases {
 		tr := AssessTrust(c.clean, c.failed)

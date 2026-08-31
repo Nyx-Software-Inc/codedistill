@@ -28,10 +28,10 @@ import (
 // canned JSON response. Used to exercise Suggest end-to-end without
 // hitting Ollama.
 type fakeSuggester struct {
-	response   string
-	err        error
-	gotPrompt  string
-	callCount  int
+	response  string
+	err       error
+	gotPrompt string
+	callCount int
 }
 
 func (f *fakeSuggester) GenerateJSON(ctx context.Context, prompt string) (string, error) {

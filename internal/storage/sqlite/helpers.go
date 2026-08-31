@@ -61,7 +61,6 @@ func nullTimePtr(t *time.Time) sql.NullTime {
 	return sql.NullTime{Time: *t, Valid: true}
 }
 
-
 // nullIntPtr converts a *int into a sql.NullInt64, NULL for nil. Unlike
 // nullInt64Zero, a real 0 round-trips as 0 (not NULL) — needed for columns
 // like a process exit code where 0 is a meaningful value, not "unset".

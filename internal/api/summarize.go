@@ -108,7 +108,7 @@ func (s *Server) summarizeURL(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.store.CreateScratchpadItem(r.Context(), item); err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
+		writeErr(w, statusFor(err), err)
 		return
 	}
 	if s.agent != nil {

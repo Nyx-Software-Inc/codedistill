@@ -82,9 +82,9 @@ type ExportQueueItem struct {
 // installs may have many. A User belongs to one or more Workspaces via
 // WorkspaceMember. A Project belongs to exactly one Workspace.
 type Workspace struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Plan      string    `json:"plan"` // "free" | "team" | "enterprise"
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Plan string `json:"plan"` // "free" | "team" | "enterprise"
 	// SeatLimit zero means unlimited / not enforced (free tier).
 	SeatLimit int       `json:"seat_limit,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
@@ -94,16 +94,16 @@ type Workspace struct {
 // exists with id="local" and provider="local". SSO populates ExternalID +
 // Provider.
 type User struct {
-	ID          string    `json:"id"`
-	Email       string    `json:"email,omitempty"`
-	DisplayName string    `json:"display_name"`
+	ID          string `json:"id"`
+	Email       string `json:"email,omitempty"`
+	DisplayName string `json:"display_name"`
 	// CanonicalName is the IdP-provided real name, immutable by the user — the
 	// disambiguator (with Email) behind an editable DisplayName.
-	CanonicalName string  `json:"canonical_name,omitempty"`
-	Avatar      string    `json:"avatar,omitempty"`
-	ExternalID  string    `json:"external_id,omitempty"`
-	Provider    string    `json:"provider,omitempty"` // "local" | "google" | "github" | "oidc"
-	CreatedAt   time.Time `json:"created_at"`
+	CanonicalName string    `json:"canonical_name,omitempty"`
+	Avatar        string    `json:"avatar,omitempty"`
+	ExternalID    string    `json:"external_id,omitempty"`
+	Provider      string    `json:"provider,omitempty"` // "local" | "google" | "github" | "oidc"
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 // WorkspaceMember ties a User to a Workspace with a role.
@@ -145,9 +145,9 @@ type Codebase struct {
 }
 
 type Project struct {
-	ID          string    `json:"id"`
-	WorkspaceID string    `json:"workspace_id"`
-	Name        string    `json:"name"`
+	ID          string `json:"id"`
+	WorkspaceID string `json:"workspace_id"`
+	Name        string `json:"name"`
 	// RepoRoot is the legacy single-repo path. Phase 2 introduces the Codebase
 	// table as the source of truth for repo locations; RepoRoot is preserved
 	// for the single-codebase case so existing API consumers keep working
@@ -178,49 +178,50 @@ type Scratchpad struct {
 // Classification_State values: unprocessed, processing, classified, pending-review, skipped, failed.
 // Classification_Override values: "", "todo", "bug", "kb", "skip".
 // Skipped_Reason values (only meaningful when state=skipped): strict_mode_low_confidence,
-//   user_rejected_from_inbox, override_skip, derived_item_deleted.
+//
+//	user_rejected_from_inbox, override_skip, derived_item_deleted.
 type ScratchpadItem struct {
-	ID                       string    `json:"id"`
-	ScratchpadID             string    `json:"scratchpad_id"`
+	ID           string `json:"id"`
+	ScratchpadID string `json:"scratchpad_id"`
 	// Name is the user-set label for this item. Empty by default; UI falls
 	// back to the first non-blank line of Content when empty so existing
 	// items keep their familiar appearance. Setting Name does NOT propagate
 	// to a derived todo/bug/KB's subject (Option A — items diverge after
 	// creation).
-	Name                     string    `json:"name"`
-	ContentType              string    `json:"content_type"` // "text", "code_snippet", "link"
-	Content                  string    `json:"content"`
-	ClassificationState      string    `json:"classification_state"`
-	SkippedReason            string    `json:"skipped_reason,omitempty"`
-	ClassificationOverride   string    `json:"classification_override,omitempty"`
-	ProposedCategory         string    `json:"proposed_category,omitempty"`
-	ClassificationConfidence float64   `json:"classification_confidence,omitempty"`
-	ClassificationReasoning  string    `json:"classification_reasoning,omitempty"`
+	Name                     string  `json:"name"`
+	ContentType              string  `json:"content_type"` // "text", "code_snippet", "link"
+	Content                  string  `json:"content"`
+	ClassificationState      string  `json:"classification_state"`
+	SkippedReason            string  `json:"skipped_reason,omitempty"`
+	ClassificationOverride   string  `json:"classification_override,omitempty"`
+	ProposedCategory         string  `json:"proposed_category,omitempty"`
+	ClassificationConfidence float64 `json:"classification_confidence,omitempty"`
+	ClassificationReasoning  string  `json:"classification_reasoning,omitempty"`
 	// ProposedRole/Want/Why are agent-extracted shadow fields. Populated when
 	// proposed_category=use_case and the source conveys a user-story shape;
 	// consumed by the derive pipeline when the item is committed. Empty
 	// otherwise.
-	ProposedRole             string    `json:"proposed_role,omitempty"`
-	ProposedWant             string    `json:"proposed_want,omitempty"`
-	ProposedWhy              string    `json:"proposed_why,omitempty"`
-	DerivedItemID            string    `json:"derived_item_id,omitempty"`
+	ProposedRole  string `json:"proposed_role,omitempty"`
+	ProposedWant  string `json:"proposed_want,omitempty"`
+	ProposedWhy   string `json:"proposed_why,omitempty"`
+	DerivedItemID string `json:"derived_item_id,omitempty"`
 	// Hidden removes the item from the active canvas while preserving its
 	// grid geometry so unhide restores it in place.
-	Hidden                   bool      `json:"hidden"`
+	Hidden bool `json:"hidden"`
 	// ArchivedAt marks a deliberately archived item (backlog item #19): kept in
 	// full + searchable, but off the canvas. nil = live. Distinct from Hidden.
-	ArchivedAt               *time.Time `json:"archived_at,omitempty"`
+	ArchivedAt *time.Time `json:"archived_at,omitempty"`
 	// Annotations is a read-model field, not a stored column (0060 dropped the
 	// blob): for a group frame the store populates it from group_notes; for
 	// everything else notes live on the activity log (item_events).
 	// Tags are normalized (lowercased, trimmed, unique) labels.
-	Annotations              string    `json:"annotations"`
-	Tags                     []string  `json:"tags"`
+	Annotations string   `json:"annotations"`
+	Tags        []string `json:"tags"`
 	// Grid layout on the Scratchpad canvas (24-col snap grid, row-unit client-side).
-	GridCol                  int       `json:"grid_col"`
-	GridRow                  int       `json:"grid_row"`
-	GridW                    int       `json:"grid_w"`
-	GridH                    int       `json:"grid_h"`
+	GridCol int `json:"grid_col"`
+	GridRow int `json:"grid_row"`
+	GridW   int `json:"grid_w"`
+	GridH   int `json:"grid_h"`
 	// Dedup-at-classify candidate match. Populated by the agent right
 	// after embedding when the new item's vector cosine-matches an
 	// existing scratchpad_item in the same project above the dedup
@@ -228,8 +229,8 @@ type ScratchpadItem struct {
 	// the cosine value (0..1). Both empty/zero when no candidate. The
 	// SPA shows a "possible duplicate" banner; user can dismiss
 	// (clears both fields) or open the candidate to compare.
-	SimilarToID              string    `json:"similar_to_id,omitempty"`
-	SimilarityScore          float64   `json:"similarity_score,omitempty"`
+	SimilarToID     string  `json:"similar_to_id,omitempty"`
+	SimilarityScore float64 `json:"similarity_score,omitempty"`
 	// Rich-canvas binary metadata (migration 0022). All zero/empty
 	// for text/code_snippet/link items; populated for image/file
 	// content types. BlobSHA is the cross-reference into the
@@ -239,12 +240,12 @@ type ScratchpadItem struct {
 	// original upload name for download Content-Disposition.
 	// ByteSize is the blob's size in bytes, denormalized so list
 	// views don't have to round-trip to the store.
-	BlobSHA                  string    `json:"blob_sha,omitempty"`
-	MimeType                 string    `json:"mime_type,omitempty"`
-	FileName                 string    `json:"file_name,omitempty"`
-	ByteSize                 int64     `json:"byte_size,omitempty"`
-	Width                    int       `json:"width,omitempty"`
-	Height                   int       `json:"height,omitempty"`
+	BlobSHA  string `json:"blob_sha,omitempty"`
+	MimeType string `json:"mime_type,omitempty"`
+	FileName string `json:"file_name,omitempty"`
+	ByteSize int64  `json:"byte_size,omitempty"`
+	Width    int    `json:"width,omitempty"`
+	Height   int    `json:"height,omitempty"`
 	// OpenGraph metadata for content_type='link' items (Slice 3).
 	// Populated asynchronously after item create by the OG fetcher
 	// (internal/api/og.go). OGFetchedAt is set on BOTH success and
@@ -254,59 +255,59 @@ type ScratchpadItem struct {
 	// via the same BlobStore as binary items; the GC sweeper's
 	// live-set query includes og_image_sha so OG thumbnails aren't
 	// swept.
-	OGTitle                  string     `json:"og_title,omitempty"`
-	OGDescription            string     `json:"og_description,omitempty"`
-	OGImageSHA               string     `json:"og_image_sha,omitempty"`
-	OGFetchedAt              *time.Time `json:"og_fetched_at,omitempty"`
+	OGTitle       string     `json:"og_title,omitempty"`
+	OGDescription string     `json:"og_description,omitempty"`
+	OGImageSHA    string     `json:"og_image_sha,omitempty"`
+	OGFetchedAt   *time.Time `json:"og_fetched_at,omitempty"`
 	// Slice 6 — group membership. GroupID points at the parent
 	// group's id (a scratchpad_item with content_type='group');
 	// empty for ungrouped items and for the groups themselves.
 	// Collapsed is only meaningful when content_type='group' —
 	// the UI hides the group's children when set.
-	GroupID                  string     `json:"group_id,omitempty"`
-	Collapsed                bool       `json:"collapsed,omitempty"`
-	CreatedAt                time.Time  `json:"created_at"`
-	UpdatedAt                time.Time  `json:"updated_at"`
+	GroupID   string    `json:"group_id,omitempty"`
+	Collapsed bool      `json:"collapsed,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type TodoItem struct {
-	ID           string     `json:"id"`
-	ProjectID    string     `json:"project_id"`
-	CreatorID    string     `json:"creator_id"`
-	SourceItemID string     `json:"source_item_id,omitempty"` // scratchpad item id, nullable when source deleted
+	ID           string `json:"id"`
+	ProjectID    string `json:"project_id"`
+	CreatorID    string `json:"creator_id"`
+	SourceItemID string `json:"source_item_id,omitempty"` // scratchpad item id, nullable when source deleted
 	// SourceName mirrors the source scratchpad item's name when set, so
 	// list views can prefer the user-given label over the auto-derived
 	// Subject. Populated by storage queries via LEFT JOIN; empty when
 	// the source item has no name or has been deleted.
-	SourceName   string     `json:"source_name,omitempty"`
+	SourceName string `json:"source_name,omitempty"`
 	// Number is a 1-based per-project sequence, assigned at creation. Stored
 	// as INTEGER; the UI renders T-{n} when surfaced (today: not exposed —
 	// reserved for external-ID sync and cross-references).
-	Number       int        `json:"number"`
-	Subject      string     `json:"subject"`
-	Priority     string     `json:"priority"` // high, medium, low, none
+	Number   int    `json:"number"`
+	Subject  string `json:"subject"`
+	Priority string `json:"priority"` // high, medium, low, none
 	// Tags live on the work record (canvas rework C3); seeded from the source's
 	// #hashtags at derivation, editable here.
-	Tags []string `json:"tags"`
-	Status       string     `json:"status"`   // incomplete, in_progress, complete, abandoned
-	Origin       string     `json:"origin"`   // manual, agent-derived
-	Visibility   string     `json:"visibility"` // "private" | "project"
-	CreatedAt    time.Time  `json:"created_at"`
-	CompletedAt  *time.Time `json:"completed_at,omitempty"`
+	Tags        []string   `json:"tags"`
+	Status      string     `json:"status"`     // incomplete, in_progress, complete, abandoned
+	Origin      string     `json:"origin"`     // manual, agent-derived
+	Visibility  string     `json:"visibility"` // "private" | "project"
+	CreatedAt   time.Time  `json:"created_at"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
 	// DueDate is an optional user-set deadline (CodeDestill_imports todo #6).
-	DueDate      *time.Time `json:"due_date,omitempty"`
+	DueDate *time.Time `json:"due_date,omitempty"`
 	// CommitSHA / CommitTag: filled when status flips to complete —
 	// CommitSHA auto-populated from project HEAD if blank, CommitTag is
 	// user-supplied. Cleared on flip back to incomplete. See migration
 	// 0017 for the full transition rules.
-	CommitSHA    string     `json:"commit_sha,omitempty"`
-	CommitTag    string     `json:"commit_tag,omitempty"`
+	CommitSHA string `json:"commit_sha,omitempty"`
+	CommitTag string `json:"commit_tag,omitempty"`
 	// ClaimedBy / ClaimedAt: who/what is currently working on this todo.
 	// Set by POST /api/v1/todos/{id}/claim (or the equivalent MCP tool).
 	// Survives the move to a terminal status as a historical record so
 	// the UI can show "completed by Claude on …".
-	ClaimedBy    string     `json:"claimed_by,omitempty"`
-	ClaimedAt    *time.Time `json:"claimed_at,omitempty"`
+	ClaimedBy string     `json:"claimed_by,omitempty"`
+	ClaimedAt *time.Time `json:"claimed_at,omitempty"`
 	// MCP-export sync state (v0.8.2 #9 client). Populated by the
 	// outbound worker when the user has a destination configured for
 	// todos. SyncStatus is one of "local-only" | "pending" | "synced"
@@ -319,18 +320,18 @@ type TodoItem struct {
 }
 
 type BugItem struct {
-	ID                string    `json:"id"`
-	ProjectID         string    `json:"project_id"`
-	CreatorID         string    `json:"creator_id"`
-	SourceItemID      string    `json:"source_item_id,omitempty"`
+	ID           string `json:"id"`
+	ProjectID    string `json:"project_id"`
+	CreatorID    string `json:"creator_id"`
+	SourceItemID string `json:"source_item_id,omitempty"`
 	// See TodoItem.SourceName.
-	SourceName        string    `json:"source_name,omitempty"`
-	Number            int       `json:"number"`
-	Subject           string    `json:"subject"`
-	Severity          string    `json:"severity"` // critical, major, minor, trivial
+	SourceName string `json:"source_name,omitempty"`
+	Number     int    `json:"number"`
+	Subject    string `json:"subject"`
+	Severity   string `json:"severity"` // critical, major, minor, trivial
 	// Tags live on the work record (canvas rework C3).
-	Tags []string `json:"tags"`
-	Status            string    `json:"status"`   // open, investigating, in-progress, fixed, verified, closed
+	Tags              []string  `json:"tags"`
+	Status            string    `json:"status"` // open, investigating, in-progress, fixed, verified, closed
 	StepsToReproduce  string    `json:"steps_to_reproduce,omitempty"`
 	ExpectedBehavior  string    `json:"expected_behavior,omitempty"`
 	ActualBehavior    string    `json:"actual_behavior,omitempty"`
@@ -349,10 +350,10 @@ type BugItem struct {
 	CommitSHA   string     `json:"commit_sha,omitempty"`
 	CommitTag   string     `json:"commit_tag,omitempty"`
 	// DueDate is an optional user-set deadline (UC-46; mirrors TodoItem).
-	DueDate     *time.Time `json:"due_date,omitempty"`
+	DueDate *time.Time `json:"due_date,omitempty"`
 	// See TodoItem.ClaimedBy.
-	ClaimedBy   string     `json:"claimed_by,omitempty"`
-	ClaimedAt   *time.Time `json:"claimed_at,omitempty"`
+	ClaimedBy string     `json:"claimed_by,omitempty"`
+	ClaimedAt *time.Time `json:"claimed_at,omitempty"`
 	// See TodoItem for sync-field semantics.
 	RemoteID      string     `json:"remote_id,omitempty"`
 	SyncStatus    string     `json:"sync_status,omitempty"`
@@ -361,31 +362,31 @@ type BugItem struct {
 }
 
 type KnowledgeEntry struct {
-	ID           string    `json:"id"`
-	ProjectID    string    `json:"project_id"`
-	CreatorID    string    `json:"creator_id"`
-	SourceItemID string    `json:"source_item_id,omitempty"`
+	ID           string `json:"id"`
+	ProjectID    string `json:"project_id"`
+	CreatorID    string `json:"creator_id"`
+	SourceItemID string `json:"source_item_id,omitempty"`
 	// See TodoItem.SourceName.
-	SourceName   string    `json:"source_name,omitempty"`
-	Number       int       `json:"number"`
-	Title        string    `json:"title"`
-	Content      string    `json:"content"`
+	SourceName string `json:"source_name,omitempty"`
+	Number     int    `json:"number"`
+	Title      string `json:"title"`
+	Content    string `json:"content"`
 	// Tags live on the work record (canvas rework C3).
-	Tags         []string  `json:"tags"`
-	Visibility   string    `json:"visibility"` // "private" | "project"
+	Tags       []string `json:"tags"`
+	Visibility string   `json:"visibility"` // "private" | "project"
 	// Status: "active" | "deprecated". Deprecated KB stays searchable
 	// (with include_done=true) but is hidden from default list views
 	// and MCP reads — for "this knowledge is stale, kept for history."
-	Status       string    `json:"status"`
+	Status string `json:"status"`
 	// Kind structures the project brain (glass-box Phase 5): "architecture" |
 	// "convention" | "decision" | "reference". reference is the default (plain
 	// KB); the first three are the agent-facing context substrate.
-	Kind         string    `json:"kind"`
-	CreatedAt    time.Time `json:"created_at"`
+	Kind      string    `json:"kind"`
+	CreatedAt time.Time `json:"created_at"`
 	// See TodoItem.ClaimedBy. KB rarely needs claim semantics in
 	// practice but the columns exist for symmetry across types.
-	ClaimedBy    string     `json:"claimed_by,omitempty"`
-	ClaimedAt    *time.Time `json:"claimed_at,omitempty"`
+	ClaimedBy string     `json:"claimed_by,omitempty"`
+	ClaimedAt *time.Time `json:"claimed_at,omitempty"`
 	// See TodoItem for sync-field semantics.
 	RemoteID      string     `json:"remote_id,omitempty"`
 	SyncStatus    string     `json:"sync_status,omitempty"`
@@ -402,39 +403,43 @@ type KnowledgeEntry struct {
 // capability shipped. Implementation locations themselves live as CodeAnchor
 // rows with OwnerType="use_case_item".
 type UseCaseItem struct {
-	ID                 string     `json:"id"`
-	ProjectID          string     `json:"project_id"`
-	CreatorID          string     `json:"creator_id"`
-	SourceItemID       string     `json:"source_item_id,omitempty"`
+	ID           string `json:"id"`
+	ProjectID    string `json:"project_id"`
+	CreatorID    string `json:"creator_id"`
+	SourceItemID string `json:"source_item_id,omitempty"`
 	// See TodoItem.SourceName.
-	SourceName         string     `json:"source_name,omitempty"`
+	SourceName string `json:"source_name,omitempty"`
 	// Number is a 1-based per-project sequence, surfaced in the UI as UC-{n}.
-	Number             int        `json:"number"`
-	Subject            string     `json:"subject"`
-	Description        string     `json:"description,omitempty"`
+	Number      int    `json:"number"`
+	Subject     string `json:"subject"`
+	Description string `json:"description,omitempty"`
 	// Role / Want / Why are the structured pieces of an "as a [role] I want X
 	// so that Y" user story, populated by the agent's classify pass when the
 	// LLM detects that shape. Empty when the source is a casual note; the
 	// original paste lives in Description either way.
-	Role               string     `json:"role,omitempty"`
-	Want               string     `json:"want,omitempty"`
-	Why                string     `json:"why,omitempty"`
+	Role string `json:"role,omitempty"`
+	Want string `json:"want,omitempty"`
+	Why  string `json:"why,omitempty"`
 	// Tags live on the work record (canvas rework C3).
-	Tags []string `json:"tags"`
-	Status             string     `json:"status"` // "open" | "approved" | "in_progress" | "completed" | "rejected"
+	Tags   []string `json:"tags"`
+	Status string   `json:"status"` // "open" | "approved" | "in_progress" | "completed" | "rejected"
+	// Priority uses the same vocabulary as TodoItem. Bugs deliberately do not
+	// have one — they rank by Severity, which PriorityRank maps onto this order
+	// rather than giving bugs two competing axes (migration 0062).
+	Priority           string     `json:"priority"` // high, medium, low, none
 	TargetRelease      string     `json:"target_release,omitempty"`
 	ImplementationDate *time.Time `json:"implementation_date,omitempty"`
 	CommitSHA          string     `json:"commit_sha,omitempty"`
 	CommitTag          string     `json:"commit_tag,omitempty"`
 	// DueDate is an optional user-set deadline (UC-46; mirrors TodoItem).
-	DueDate            *time.Time `json:"due_date,omitempty"`
-	Origin             string     `json:"origin"` // "manual" | "agent-derived"
-	Visibility         string     `json:"visibility"` // "private" | "project"
-	CreatedAt          time.Time  `json:"created_at"`
-	UpdatedAt          time.Time  `json:"updated_at"`
+	DueDate    *time.Time `json:"due_date,omitempty"`
+	Origin     string     `json:"origin"`     // "manual" | "agent-derived"
+	Visibility string     `json:"visibility"` // "private" | "project"
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
 	// See TodoItem.ClaimedBy.
-	ClaimedBy     string     `json:"claimed_by,omitempty"`
-	ClaimedAt     *time.Time `json:"claimed_at,omitempty"`
+	ClaimedBy string     `json:"claimed_by,omitempty"`
+	ClaimedAt *time.Time `json:"claimed_at,omitempty"`
 	// See TodoItem for sync-field semantics.
 	RemoteID      string     `json:"remote_id,omitempty"`
 	SyncStatus    string     `json:"sync_status,omitempty"`
@@ -449,7 +454,7 @@ type UseCaseItem struct {
 //
 // Kind semantics:
 //   - "file":   Path required; LineStart/LineEnd optional (0 = unset);
-//               Revision optional (empty = working copy / latest).
+//     Revision optional (empty = working copy / latest).
 //   - "commit": Revision required (7–40 hex chars); URL optional; Path unused.
 //   - "pr":     URL required; other fields advisory.
 //
@@ -504,10 +509,10 @@ type ItemEvent struct {
 }
 
 type CodeAnchor struct {
-	ID         string    `json:"id"`
-	OwnerType  string    `json:"owner_type"` // "scratchpad_item" | "todo_item" | "bug_item" | "knowledge_entry" | "use_case_item"
-	OwnerID    string    `json:"owner_id"`
-	Kind       string    `json:"kind"` // "file" | "commit" | "pr"
+	ID        string `json:"id"`
+	OwnerType string `json:"owner_type"` // "scratchpad_item" | "todo_item" | "bug_item" | "knowledge_entry" | "use_case_item"
+	OwnerID   string `json:"owner_id"`
+	Kind      string `json:"kind"` // "file" | "commit" | "pr"
 	// CodebaseID is optional. NULL/empty means anchored against the project's
 	// single/primary codebase — the common single-user case. Multi-codebase
 	// projects must set it explicitly so the Files panel can resolve paths

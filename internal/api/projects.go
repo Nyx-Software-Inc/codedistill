@@ -132,4 +132,3 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 	s.bus.Publish(events.ProjectsChanged)
 	writeEmpty(w, http.StatusNoContent)
 }
-

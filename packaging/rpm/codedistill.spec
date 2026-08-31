@@ -1,3 +1,15 @@
+# =============================================================================
+#  Copyright (c) 2026 Nyx Software, Inc.  All rights reserved.
+#
+#  CodeDistill
+#
+#  Property of Nyx Software, Inc., provided under a dual license: the GNU Affero General
+#  Public License v3.0 (see the LICENSE file) and, separately, a commercial
+#  license available from Nyx Software, Inc. Use outside the terms of one of those
+#  licenses is prohibited.
+#
+#  SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Nyx-Commercial
+# =============================================================================
 # CodeDistill RPM spec for Fedora.
 #
 # Built by packaging/rpm/build-rpm.sh, which:
@@ -26,8 +38,8 @@ Version:    %{_version}
 Release:    1%{?dist}
 Summary:    Scratchpad → auto-classified todos, bugs, and knowledge
 
-License:    Proprietary
-URL:        https://github.com/codedistill/codedistill
+License:    AGPL-3.0-only OR LicenseRef-Nyx-Commercial
+URL:        https://codedistill.dev
 
 # Source0 is the pre-built binary tarball assembled by build-rpm.sh.
 # The tarball layout is documented there; this spec just unpacks
@@ -42,12 +54,17 @@ BuildArch:  x86_64
 %description
 CodeDistill turns the messy paste-everything scratchpad into a
 funnel of classified todos, bugs, and knowledge entries. Local-
-first single-binary install: bring your own Ollama for the LLM
-side; everything else is self-contained.
+first single-binary install: Ollama and a RAM-sized model are
+provisioned automatically at install time; everything else is
+self-contained. Nothing leaves the machine.
 
-This RPM installs the single-user desktop binary. For the
-multi-user hosted deployment, use the container image (see
-https://github.com/codedistill/codedistill).
+This RPM installs the single-user desktop binary (SQLite). The
+multi-user, Postgres-backed server deployment is a separate
+commercial offering - see https://codedistill.dev.
+
+Dual-licensed: GNU AGPL v3 only, or a commercial license from
+Nyx Software, Inc. Corresponding source:
+https://github.com/Nyx-Software-Inc/codedistill
 
 %prep
 %setup -q
@@ -67,18 +84,31 @@ install -m 0644 codedistill.service %{buildroot}/usr/lib/systemd/user/codedistil
 mkdir -p %{buildroot}/etc/profile.d
 install -m 0644 codedistill-profile.sh %{buildroot}/etc/profile.d/codedistill.sh
 
+mkdir -p %{buildroot}/opt/CodeDistill/libexec
+install -m 0755 provision-ollama.sh %{buildroot}/opt/CodeDistill/libexec/provision-ollama.sh
+
 mkdir -p %{buildroot}/usr/share/doc/%{name}
 install -m 0644 README.txt %{buildroot}/usr/share/doc/%{name}/README
 
 %files
+%license LICENSE
 %dir /opt/CodeDistill
 %dir /opt/CodeDistill/bin
+%dir /opt/CodeDistill/libexec
 /opt/CodeDistill/bin/codedistill
+/opt/CodeDistill/libexec/provision-ollama.sh
 /etc/profile.d/codedistill.sh
 /usr/lib/systemd/user/codedistill.service
 %doc /usr/share/doc/%{name}/README
 
 %post
+# Provision Ollama + a RAM-sized model (idempotent, and the same script the
+# server package runs). Without this a desktop install classified with the
+# compiled default regardless of the machine — a 64GB box got qwen2.5:7b.
+# Non-fatal by design: the script warns and exits 0 when offline or when Ollama
+# can't be reached, so a provisioning hiccup never fails the package install.
+/opt/CodeDistill/libexec/provision-ollama.sh || \
+  echo "codedistill: Ollama setup incomplete — re-run /opt/CodeDistill/libexec/provision-ollama.sh"
 # Reload user systemd so the new unit shows up in
 # `systemctl --user list-unit-files`. Best-effort: the per-user
 # daemon-reload happens lazily anyway, so a failure here is fine.

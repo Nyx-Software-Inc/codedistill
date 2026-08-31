@@ -102,13 +102,22 @@ func (s *Store) UpdateCustomFieldDef(ctx context.Context, d *domain.CustomFieldD
 // DeleteCustomFieldDef removes a definition and all its values. Values are
 // dropped explicitly (belt-and-braces alongside the FK cascade).
 func (s *Store) DeleteCustomFieldDef(ctx context.Context, id string) error {
-	if _, err := s.DB.ExecContext(ctx, `DELETE FROM custom_field_values WHERE field_id = ?`, id); err != nil {
+	// One transaction so a failure between the two can't strip every item's
+	// values for a field definition that then survives — the field would still
+	// be offered while the data behind it was silently gone.
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("delete custom field def: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM custom_field_values WHERE field_id = ?`, id); err != nil {
 		return fmt.Errorf("delete custom field values: %w", err)
 	}
-	if _, err := s.DB.ExecContext(ctx, `DELETE FROM custom_field_defs WHERE id = ?`, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM custom_field_defs WHERE id = ?`, id); err != nil {
 		return fmt.Errorf("delete custom field def: %w", err)
 	}
-	return nil
+	return tx.Commit()
 }
 
 // ListCustomFieldValues returns one item's custom-field values (field_id→value).

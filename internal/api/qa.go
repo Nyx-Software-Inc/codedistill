@@ -39,8 +39,8 @@ const (
 	qaChunkTopK       = 6
 	qaItemMinScore    = 0.25
 	qaChunkMinScore   = 0.25
-	qaMaxItemSnippet  = 400  // chars per cited item
-	qaMaxChunkSnippet = 800  // chars per cited code chunk
+	qaMaxItemSnippet  = 400 // chars per cited item
+	qaMaxChunkSnippet = 800 // chars per cited code chunk
 )
 
 type qaRequest struct {
@@ -52,8 +52,8 @@ type qaRequest struct {
 // Round-trips to the SPA so the citation markers in the answer text
 // can be made clickable + routed to the right surface.
 type qaCitation struct {
-	Marker       string `json:"marker"`           // e.g. "item:abc" or "code:def"
-	Kind         string `json:"kind"`             // item.kind or "code_chunk"
+	Marker       string `json:"marker"` // e.g. "item:abc" or "code:def"
+	Kind         string `json:"kind"`   // item.kind or "code_chunk"
 	ID           string `json:"id"`
 	Title        string `json:"title"`
 	FilePath     string `json:"file_path,omitempty"`
@@ -63,10 +63,10 @@ type qaCitation struct {
 }
 
 type qaResponse struct {
-	Answer        string       `json:"answer"`
-	Citations     []qaCitation `json:"citations"`
-	UsedItems     int          `json:"used_items"`
-	UsedChunks    int          `json:"used_chunks"`
+	Answer     string       `json:"answer"`
+	Citations  []qaCitation `json:"citations"`
+	UsedItems  int          `json:"used_items"`
+	UsedChunks int          `json:"used_chunks"`
 }
 
 // qa returns the Q&A handler. Closes over embedder + generator so the

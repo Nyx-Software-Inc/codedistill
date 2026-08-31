@@ -32,6 +32,7 @@
     Scratchpad,
     Project,
   } from './lib/types';
+  import { rankFor, type DerivedStatus } from './lib/types';
   import ScratchpadPane from './components/ScratchpadPane.svelte';
   import Drawer from './components/Drawer.svelte';
   import DialogHost from './components/DialogHost.svelte';
@@ -178,12 +179,15 @@
   // Canvas rework slice A: also carry the derived work item's subject so the
   // card can reflect the living work item's title, not the raw paste's first
   // line. KB uses `title`; the others use `subject`.
-  let derivedStatusBySource = $derived.by<Map<string, { kind: string; status: string; subject: string; number?: number }>>(() => {
-    const m = new Map<string, { kind: string; status: string; subject: string; number?: number }>();
-    for (const t of padTodos) if (t.source_item_id) m.set(t.source_item_id, { kind: 'todo', status: t.status, subject: t.subject, number: t.number });
-    for (const b of padBugs) if (b.source_item_id) m.set(b.source_item_id, { kind: 'bug', status: b.status, subject: b.subject, number: b.number });
-    for (const k of padKb) if (k.source_item_id) m.set(k.source_item_id, { kind: 'kb', status: k.status, subject: k.title });
-    for (const u of padUseCases) if (u.source_item_id) m.set(u.source_item_id, { kind: 'use case', status: u.status, subject: u.subject, number: u.number });
+  // `rank` is the comparable priority position (rankFor) so views can sort a
+  // mixed list without knowing that bugs rank by severity while todos and use
+  // cases rank by priority. KB never ranks.
+  let derivedStatusBySource = $derived.by<Map<string, DerivedStatus>>(() => {
+    const m = new Map<string, DerivedStatus>();
+    for (const t of padTodos) if (t.source_item_id) m.set(t.source_item_id, { kind: 'todo', status: t.status, subject: t.subject, number: t.number, rank: rankFor('todo', t.priority) });
+    for (const b of padBugs) if (b.source_item_id) m.set(b.source_item_id, { kind: 'bug', status: b.status, subject: b.subject, number: b.number, rank: rankFor('bug', b.severity) });
+    for (const k of padKb) if (k.source_item_id) m.set(k.source_item_id, { kind: 'kb', status: k.status, subject: k.title, rank: rankFor('kb', undefined) });
+    for (const u of padUseCases) if (u.source_item_id) m.set(u.source_item_id, { kind: 'use case', status: u.status, subject: u.subject, number: u.number, rank: rankFor('use case', u.priority) });
     return m;
   });
 
@@ -289,18 +293,15 @@
     }
   });
 
-  // Hidden credits modal — triple-click the version chip in the header.
-  // We track recent click timestamps; three within 700 ms opens it.
+  // About dialog — the version chip opens it on a SINGLE click. It used to be a
+  // triple-click easter egg, which is the opposite of prominent: AGPL-3.0 §13
+  // requires users interacting over a network to be prominently offered the
+  // Corresponding Source, and §5(d) requires interactive interfaces to show
+  // Appropriate Legal Notices. CodeDistill serves its UI over HTTP, so that
+  // dialog has to be reachable without knowing a secret gesture.
   let creditsOpen = $state(false);
-  let versionClicks: number[] = [];
   function onVersionClick() {
-    const now = Date.now();
-    versionClicks = versionClicks.filter((t) => now - t < 700);
-    versionClicks.push(now);
-    if (versionClicks.length >= 3) {
-      versionClicks = [];
-      creditsOpen = true;
-    }
+    creditsOpen = true;
   }
   let errorMsg = $state<string>('');
   let hiddenCount = $derived(items.filter((i) => i.hidden).length);
@@ -662,6 +663,7 @@
     }
     try {
       const r = await api.getUserSetting(LOCAL_USER, `${CODE_CANVAS_KEY_PREFIX}${pid}`);
+      if (!r) return; // 204 — no saved code-canvas state for this project yet
       const v = r.value as { tabs?: CodeTab[]; activeIndex?: number; visible?: boolean } | null;
       const tabs = Array.isArray(v?.tabs)
         ? v.tabs.filter((t) => t && typeof t.path === 'string' && typeof t.revision === 'string')
@@ -1098,6 +1100,7 @@
       );
       try {
         const r = await api.getUserSetting(LOCAL_USER, ACTIVE_PROJECT_KEY);
+        if (!r) return; // 204 — no active project remembered yet
         if (typeof r.value === 'string' && r.value) {
           activeProjectId = r.value;
         }
@@ -1257,7 +1260,7 @@
           class="version"
           role="button"
           tabindex="0"
-          title="{buildInfo.version} ({buildInfo.git_sha}, {buildInfo.build_date})"
+          title="About CodeDistill — {buildInfo.version} ({buildInfo.git_sha}, {buildInfo.build_date})"
           onclick={onVersionClick}
         >v{buildInfo.version}</span>
       {/if}
@@ -1432,6 +1435,7 @@
   <CreditsModal
     open={creditsOpen}
     build={buildInfo}
+    {license}
     onClose={() => (creditsOpen = false)}
   />
 

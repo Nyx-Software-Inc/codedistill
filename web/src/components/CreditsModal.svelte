@@ -18,9 +18,18 @@
   type Props = {
     open: boolean;
     build: api.VersionInfo | null;
+    license: api.LicenseInfo | null;
     onClose: () => void;
   };
-  let { open, build, onClose }: Props = $props();
+  let { open, build, license, onClose }: Props = $props();
+
+  // AGPL-3.0 §13 requires that users interacting with a modified program over a
+  // network are PROMINENTLY offered the Corresponding Source, and §5(d) requires
+  // interactive interfaces to display Appropriate Legal Notices. CodeDistill
+  // serves its UI over HTTP, so this dialog is where both obligations are met —
+  // which is why the version chip opens it on a single click rather than hiding
+  // it behind the old triple-click easter egg.
+  const SOURCE_URL = 'https://github.com/Nyx-Software-Inc/codedistill';
 
   let stats = $state<api.CreditsSummary | null>(null);
   let error = $state<string>('');
@@ -45,7 +54,7 @@
   );
 </script>
 
-<Modal {open} title="Credits" {onClose} width="480px">
+<Modal {open} title="About CodeDistill" {onClose} width="480px">
   {#if build}
     <div class="build">
       <span class="label">Build</span>
@@ -79,9 +88,46 @@
   {/if}
 
   <p class="tagline">CodeDistill — distill what you do.</p>
+
+  <div class="legal">
+    <p>Copyright © 2026 Nyx&nbsp;Software,&nbsp;Inc. All rights reserved.</p>
+    {#if license?.oss_build}
+      <p>
+        This is the <strong>Community Edition</strong>, free software licensed under the
+        <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noreferrer noopener">GNU
+        Affero General Public License, version 3</a>. It comes with
+        <strong>absolutely no warranty</strong>, to the extent permitted by law.
+      </p>
+      <p>
+        The complete corresponding source for this version is available at
+        <a href={SOURCE_URL} target="_blank" rel="noreferrer noopener">{SOURCE_URL}</a>.
+      </p>
+    {:else}
+      <p>
+        Licensed commercially from Nyx&nbsp;Software,&nbsp;Inc. CodeDistill is dual-licensed: a
+        Community Edition is also published as free software under the
+        <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noreferrer noopener">GNU
+        AGPL&nbsp;v3</a>, with source at
+        <a href={SOURCE_URL} target="_blank" rel="noreferrer noopener">{SOURCE_URL}</a>.
+      </p>
+    {/if}
+  </div>
 </Modal>
 
 <style>
+  .legal {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--p-2a2a2a);
+    font-size: 11px;
+    line-height: 1.55;
+    color: var(--p-888888);
+  }
+  .legal p { margin: 0 0 6px 0; }
+  .legal p:last-child { margin-bottom: 0; }
+  .legal a { color: var(--p-99ccff); }
+  .legal strong { color: var(--p-bbbbbb); font-weight: 600; }
+
   .build {
     display: flex;
     flex-direction: column;

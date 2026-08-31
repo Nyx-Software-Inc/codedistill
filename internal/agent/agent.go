@@ -62,6 +62,10 @@ type Agent struct {
 	now        func() time.Time
 	log        *slog.Logger
 	fileTree   ProjectFileTreeFunc // optional; nil = no auto-anchor
+	// codeAnchors reports whether the paid CodeAnchors feature is licensed.
+	// Defaults to FALSE — fail-closed. This package stays license-agnostic (no
+	// features import); main.go supplies the answer.
+	codeAnchors bool
 	// grouper is the paid duplicate-intelligence impl (internal/dedup).
 	// Optional; nil = no dedup banner / no auto-grouping (free build,
 	// or commercial build without the Dedup feature). See dedup_iface.go.
@@ -100,17 +104,30 @@ type Agent struct {
 
 type Option func(*Agent)
 
-func WithLogger(l *slog.Logger) Option    { return func(a *Agent) { a.log = l } }
-func WithIDGen(f func() string) Option    { return func(a *Agent) { a.newID = f } }
+func WithLogger(l *slog.Logger) Option { return func(a *Agent) { a.log = l } }
+func WithIDGen(f func() string) Option { return func(a *Agent) { a.newID = f } }
 
 // WithCriteriaDrafter wires the AI acceptance-criteria drafter (glass-box
 // Phase 2). When set, classifying a drop into a use_case/bug also drafts
 // proposed criteria; it also backs the on-demand "Draft with AI" action.
 func WithCriteriaDrafter(d CriteriaDrafter) Option { return func(a *Agent) { a.criteria = d } }
-func WithClock(f func() time.Time) Option { return func(a *Agent) { a.now = f } }
-func WithQueueSize(n int) Option          { return func(a *Agent) { a.jobs = make(chan string, n) } }
+func WithClock(f func() time.Time) Option          { return func(a *Agent) { a.now = f } }
+func WithQueueSize(n int) Option                   { return func(a *Agent) { a.jobs = make(chan string, n) } }
 func WithProjectFileTree(f ProjectFileTreeFunc) Option {
 	return func(a *Agent) { a.fileTree = f }
+}
+
+// WithCodeAnchors enables auto-anchoring, which is the paid CodeAnchors feature.
+//
+// Gating only the file-tree source was not enough: deriveAutoAnchorPaths also
+// searches embedded code_chunks, and that route had no gate. A database carrying
+// chunks from a previous licensed run — most realistically a LAPSED license on
+// the same binary — kept minting agent-suggested anchors (CE-review item 28).
+//
+// Off by default so a caller that forgets it loses a paid feature rather than
+// leaks one.
+func WithCodeAnchors(enabled bool) Option {
+	return func(a *Agent) { a.codeAnchors = enabled }
 }
 func WithEmbedder(e Embedder) Option {
 	return func(a *Agent) { a.embedder = e }
@@ -324,7 +341,11 @@ func (a *Agent) Process(ctx context.Context, itemID string) error {
 	// Persists as agent-suggested anchors on the source scratchpad_item
 	// BEFORE moving to pending-review; CopyCodeAnchors will propagate
 	// them to the derived item on Accept. Per-anchor failure is non-fatal.
-	if strings.ToUpper(result.Category) != "KB" {
+	// a.codeAnchors is redundant here today — an empty FileTree already makes
+	// filterToTree return nothing — but this is the statement that actually
+	// writes the paid artifact, so it carries the check too rather than relying
+	// on a caller three frames up.
+	if a.codeAnchors && strings.ToUpper(result.Category) != "KB" {
 		validPaths := filterToTree(result.SuggestedFiles, in.FileTree)
 		if len(validPaths) > 0 {
 			now := a.now()
@@ -459,6 +480,13 @@ const (
 func (a *Agent) deriveAutoAnchorPaths(
 	ctx context.Context, projectID string, vec []float32,
 ) []string {
+	// One door for BOTH sources. Gating only the file-tree wiring in main.go left
+	// the chunk search below wide open, so a database with chunks from an earlier
+	// licensed run kept auto-anchoring after the license lapsed (CE-review
+	// item 28).
+	if !a.codeAnchors {
+		return nil
+	}
 	if len(vec) > 0 {
 		hits, err := a.store.SearchCodeChunks(
 			ctx, projectID, vec, autoAnchorChunkMinScore, autoAnchorChunkLimit,

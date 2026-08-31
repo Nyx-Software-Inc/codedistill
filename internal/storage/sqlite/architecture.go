@@ -81,7 +81,10 @@ func (s *Store) UpdateArchitectureNode(ctx context.Context, n *domain.Architectu
 		return fmt.Errorf("update architecture node: %w", err)
 	}
 	if c, _ := res.RowsAffected(); c == 0 {
-		return fmt.Errorf("architecture node %s: not found", n.ID)
+		// %w, matching GetArchitectureNode above. Without the sentinel errors.Is
+		// is blind and statusFor answers 500 for a plain not-found (CE-review
+		// item 31).
+		return fmt.Errorf("architecture node %s: %w", n.ID, storage.ErrNotFound)
 	}
 	return nil
 }
@@ -117,14 +120,32 @@ func (s *Store) ArchitectureHasMissing(ctx context.Context, projectID string) (b
 
 // DeleteArchitectureNode removes a node and any edges touching it.
 func (s *Store) DeleteArchitectureNode(ctx context.Context, id string) error {
-	if _, err := s.DB.ExecContext(ctx,
+	// One transaction so a mid-way failure can't strip a surviving node's edges.
+	// The RowsAffected check makes a no-op delete report ErrNotFound rather than
+	// success, so the API answers 404 like every other delete. 404 over
+	// idempotent-204 was a deliberate call: for the architecture diagram a silent
+	// false success would let a stale node id "delete" and leave the user
+	// believing the diagram changed (CE-review item 31).
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("delete architecture node: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM architecture_edges WHERE from_node = ? OR to_node = ?`, id, id); err != nil {
 		return fmt.Errorf("delete node edges: %w", err)
 	}
-	if _, err := s.DB.ExecContext(ctx, `DELETE FROM architecture_nodes WHERE id = ?`, id); err != nil {
+	res, err := tx.ExecContext(ctx, `DELETE FROM architecture_nodes WHERE id = ?`, id)
+	if err != nil {
 		return fmt.Errorf("delete architecture node: %w", err)
 	}
-	return nil
+	// Checked before commit so a missing node rolls back the edge delete too —
+	// otherwise a bogus id could still strip edges on its way to reporting 404.
+	if c, _ := res.RowsAffected(); c == 0 {
+		return fmt.Errorf("architecture node %s: %w", id, storage.ErrNotFound)
+	}
+	return tx.Commit()
 }
 
 const archEdgeColumns = `id, project_id, from_node, to_node, label, provenance, created_at`
@@ -202,13 +223,22 @@ func (s *Store) RatifyProposedArchitecture(ctx context.Context, projectID string
 // DeleteProposedArchitecture clears every proposed (un-ratified) node + edge for
 // a project, so a re-draft can replace the proposal while ratified structure survives.
 func (s *Store) DeleteProposedArchitecture(ctx context.Context, projectID string) error {
-	if _, err := s.DB.ExecContext(ctx,
+	// One transaction so a failure between the two can't leave proposed edges
+	// pointing at nodes that are already gone — the redraft would then render
+	// a half-cleared proposal.
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("clear proposed architecture: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM architecture_edges WHERE project_id = ? AND provenance = 'proposed'`, projectID); err != nil {
 		return fmt.Errorf("clear proposed edges: %w", err)
 	}
-	if _, err := s.DB.ExecContext(ctx,
+	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM architecture_nodes WHERE project_id = ? AND provenance = 'proposed'`, projectID); err != nil {
 		return fmt.Errorf("clear proposed nodes: %w", err)
 	}
-	return nil
+	return tx.Commit()
 }

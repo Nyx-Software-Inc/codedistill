@@ -304,6 +304,30 @@ export interface ScratchpadItem {
 }
 
 export type Priority = 'high' | 'medium' | 'low' | 'none';
+
+/** The priority vocabulary, most important first. Mirrors domain.Priorities in
+ *  Go and the CHECK constraints on todo_items.priority / use_case_items.priority.
+ *  Exported so TodoDetail and UseCaseDetail share one list instead of each
+ *  keeping a copy that can drift. */
+export const PRIORITIES: Priority[] = ['high', 'medium', 'low', 'none'];
+
+/** Comparable rank across item kinds that don't share a field. Mirrors
+ *  domain.RankFor in internal/domain/priority.go — todos and use cases carry
+ *  `priority`, bugs carry `severity`, and bugs deliberately have no priority so
+ *  severity is mapped onto the same order. KB is reference material, not work,
+ *  so it never ranks. Lower is more important. */
+export const UNRANKED = 99;
+
+const PRIORITY_RANK: Record<string, number> = { high: 1, medium: 2, low: 3, none: 4 };
+const SEVERITY_RANK: Record<string, number> = { critical: 1, major: 2, minor: 3, trivial: 4 };
+
+export function rankFor(kind: string, priorityOrSeverity: string | undefined): number {
+  if (kind === 'kb') return UNRANKED;
+  const table = kind === 'bug' ? SEVERITY_RANK : PRIORITY_RANK;
+  // Unknown stays UNRANKED rather than collapsing to 'none': "we don't know" and
+  // "the user chose none" are different claims.
+  return table[priorityOrSeverity ?? ''] ?? UNRANKED;
+}
 export type TodoStatus = 'incomplete' | 'in_progress' | 'complete' | 'abandoned';
 
 /** MCP-export sync cache columns (v0.8.2 outbound export). Present on
@@ -438,6 +462,9 @@ export interface UseCaseItem extends SyncFields {
   want?: string;
   why?: string;
   status: UseCaseStatus;
+  /** Same vocabulary as TodoItem.priority. Bugs rank by `severity` instead —
+   *  they deliberately have no priority field (migration 0062). */
+  priority: 'high' | 'medium' | 'low' | 'none';
   due_date?: string;
   /** Work-record tags (canvas rework C3). See TodoItem.tags. */
   tags: string[];
@@ -468,3 +495,16 @@ export type CanvasFilter =
   | 'use_case'
   | 'unclassified'
   | 'pending_review';
+
+/** The per-source-item summary of a derived work item, shared by every view.
+ *  Previously each consumer declared its own inline variant of this shape —
+ *  ScratchpadPane, ListView, KanbanView, CalendarView and ScratchpadGrid all
+ *  differed in which optional fields they knew about. */
+export type DerivedStatus = {
+  kind: string;
+  status: string;
+  subject?: string;
+  number?: number;
+  /** Comparable priority position; see rankFor. */
+  rank?: number;
+};

@@ -160,7 +160,7 @@ func (s *Server) createBug(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:         time.Now().UTC(),
 	}
 	if err := s.store.CreateBugItem(r.Context(), b); err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
+		writeErr(w, statusFor(err), err)
 		return
 	}
 	// Legacy `notes` in the payload becomes the item's first activity-log note

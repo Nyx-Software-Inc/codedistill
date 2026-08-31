@@ -40,9 +40,9 @@ func TestParse(t *testing.T) {
 		{"due 2026-07-20", d(2026, 7, 20), true},
 		{"deadline 7/20", d(2026, 7, 20), true},
 		{"submit before friday", d(2026, 7, 17), true},
-		{"wrap up by eow", d(2026, 7, 17), true},          // Friday
-		{"invoice by eom", d(2026, 7, 31), true},          // end of month
-		{"call by next monday", d(2026, 7, 27), true},     // this Mon=7/20, next=+7
+		{"wrap up by eow", d(2026, 7, 17), true},      // Friday
+		{"invoice by eom", d(2026, 7, 31), true},      // end of month
+		{"call by next monday", d(2026, 7, 27), true}, // this Mon=7/20, next=+7
 		{"due July 20", d(2026, 7, 20), true},
 		{"by 20th of July", d(2026, 7, 20), true},
 		{"month/year rolls: due 1/5", d(2027, 1, 5), true}, // Jan already past 7/15 → next year

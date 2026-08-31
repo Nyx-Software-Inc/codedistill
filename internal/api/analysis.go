@@ -350,4 +350,3 @@ func (s *Server) dismissFinding(w http.ResponseWriter, r *http.Request) {
 	s.bus.Publish(events.ItemsChanged)
 	w.WriteHeader(http.StatusNoContent)
 }
-

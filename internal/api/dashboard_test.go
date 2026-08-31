@@ -317,10 +317,10 @@ func TestDashboardLifecycleNoRepo(t *testing.T) {
 	}
 
 	var out struct {
-		TimeToClose   map[string]struct{ Count int }`json:"time_to_close"`
-		Branches      []any          `json:"branches"`
-		Unresolved    map[string]int `json:"unresolved"`
-		RepoAvailable bool           `json:"repo_available"`
+		TimeToClose   map[string]struct{ Count int } `json:"time_to_close"`
+		Branches      []any                          `json:"branches"`
+		Unresolved    map[string]int                 `json:"unresolved"`
+		RepoAvailable bool                           `json:"repo_available"`
 	}
 	doJSON(t, srv, "GET", "/api/v1/projects/p1/dashboard/lifecycle", nil, 200, &out)
 	if out.RepoAvailable {

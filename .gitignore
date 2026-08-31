@@ -56,6 +56,12 @@ Thumbs.db
 *.license
 *.license.bak*
 
+# Claim codes are bearer credentials for the remaining seats on a purchase —
+# redeem writes one next to the installed license, which lands in the DB's
+# directory (i.e. this repo when serve runs from a checkout). Not a *.license
+# match, so the globs above miss it.
+claim-code
+
 # Brand source images live in the repo root for convenience but are design
 # assets, not product code — keep them local, out of the tree.
 /CodeDistill.png

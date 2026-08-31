@@ -28,6 +28,7 @@ export const LOCAL_USER = 'local';
 export async function loadUserBool(key: string, defaultValue: boolean): Promise<boolean> {
   try {
     const r = await getUserSetting(LOCAL_USER, key);
+    if (!r) return defaultValue; // 204 — never set; use the caller's default
     if (typeof r.value === 'boolean') return r.value;
     return defaultValue;
   } catch {
@@ -48,6 +49,7 @@ export function saveUserBool(key: string, value: boolean): void {
 export async function loadUserNum(key: string, defaultValue: number): Promise<number> {
   try {
     const r = await getUserSetting(LOCAL_USER, key);
+    if (!r) return defaultValue; // 204 — never set; use the caller's default
     if (typeof r.value === 'number' && Number.isFinite(r.value)) return r.value;
     return defaultValue;
   } catch {
@@ -66,6 +68,7 @@ export function saveUserNum(key: string, value: number): void {
 export async function loadUserString(key: string, defaultValue: string): Promise<string> {
   try {
     const r = await getUserSetting(LOCAL_USER, key);
+    if (!r) return defaultValue; // 204 — never set; use the caller's default
     return typeof r.value === 'string' ? r.value : defaultValue;
   } catch {
     return defaultValue;
@@ -84,6 +87,7 @@ export function saveUserString(key: string, value: string): void {
 export async function loadUserObject<T extends object>(key: string, defaultValue: T): Promise<T> {
   try {
     const r = await getUserSetting(LOCAL_USER, key);
+    if (!r) return defaultValue; // 204 — never set; use the caller's default
     if (r.value && typeof r.value === 'object' && !Array.isArray(r.value)) {
       return { ...defaultValue, ...(r.value as Partial<T>) };
     }

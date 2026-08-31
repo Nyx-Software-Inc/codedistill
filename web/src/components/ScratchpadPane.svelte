@@ -480,7 +480,7 @@
     api
       .getProjectSetting(projectId, 'archive.delete_action')
       .then((r) => {
-        if (r.value === 'delete' || r.value === 'archive' || r.value === 'prompt') deleteAction = r.value;
+        if (r?.value === 'delete' || r?.value === 'archive' || r?.value === 'prompt') deleteAction = r?.value;
       })
       .catch(() => {});
   });

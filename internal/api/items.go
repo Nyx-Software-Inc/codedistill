@@ -28,10 +28,13 @@ import (
 )
 
 type createItemReq struct {
-	Name                   string `json:"name,omitempty"`
-	Content                string `json:"content"`
-	ContentType            string `json:"content_type,omitempty"`            // default "text"
-	ClassificationOverride string `json:"classification_override,omitempty"` // optional: todo|bug|kb|skip
+	Name        string `json:"name,omitempty"`
+	Content     string `json:"content"`
+	ContentType string `json:"content_type,omitempty"` // default "text"
+	// optional; see domain.ClassificationOverrides — todo|bug|kb|use_case|skip.
+	// This comment said todo|bug|kb|skip and had missed use_case since v0.7.0,
+	// the same staleness as the -override flag help (CE-review item 24).
+	ClassificationOverride string `json:"classification_override,omitempty"`
 }
 
 type updateItemReq struct {
@@ -440,7 +443,7 @@ func (s *Server) createItem(w http.ResponseWriter, r *http.Request) {
 		item.GridW, item.GridH = naturalSize(req.Content)
 	}
 	if err := s.store.CreateScratchpadItem(r.Context(), item); err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
+		writeErr(w, statusFor(err), err)
 		return
 	}
 	if err := refreshDetectedAnchors(r.Context(), s.store, item.ID, item.Content, now); err != nil {

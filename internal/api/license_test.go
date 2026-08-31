@@ -24,6 +24,17 @@ import (
 	"codedistill/internal/licensing"
 )
 
+// The UNLICENSED half of the licensing contract — deliberately kept in both
+// builds. It is the community edition's only coverage of the behaviour CE is
+// defined by: a gated capability answers 402 with the stable feature_locked
+// code, and the license endpoint reports state "none" with an empty (not null)
+// feature list.
+//
+// The licensed halves of these two tests moved to license_paid_test.go. They
+// cannot pass under -tags oss, where baselineAllows() refuses every feature
+// regardless of the status handed to features.Init — so asserting a licensed
+// 200 there was asserting the opposite of the product (CE-review item 9).
+
 // gateMux returns a handler with only license-relevant plumbing — no
 // storage needed because the gate rejects before the handler runs.
 func gateMux() http.Handler {
@@ -36,25 +47,15 @@ func gateMux() http.Handler {
 	return mux
 }
 
-func TestRequireFeature_Locked(t *testing.T) {
+func TestRequireFeature_LockedRefuses(t *testing.T) {
 	defer features.Init(allFeaturesStatus()) // restore for other tests
 
 	srv := httptest.NewServer(gateMux())
 	defer srv.Close()
 
-	// Licensed (TestMain default) → passes through.
-	resp, err := http.Post(srv.URL+"/gated", "application/json", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("licensed: status %d, want 200", resp.StatusCode)
-	}
-
 	// Unlicensed → 402 with the stable feature_locked code.
 	features.Init(licensing.None("test"))
-	resp, err = http.Post(srv.URL+"/gated", "application/json", nil)
+	resp, err := http.Post(srv.URL+"/gated", "application/json", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,42 +72,29 @@ func TestRequireFeature_Locked(t *testing.T) {
 		t.Fatal(err)
 	}
 	if body.Code != "feature_locked" || body.Feature != "dedup" {
-		t.Fatalf("body = %+v, want code=feature_locked feature=matcher", body)
+		t.Fatalf("body = %+v, want code=feature_locked feature=dedup", body)
 	}
 }
 
-func TestLicenseStatusEndpoint(t *testing.T) {
+func TestLicenseStatusEndpoint_Unlicensed(t *testing.T) {
 	defer features.Init(allFeaturesStatus())
 
 	srv := httptest.NewServer(gateMux())
 	defer srv.Close()
 
-	get := func() LicenseInfo {
-		t.Helper()
-		resp, err := http.Get(srv.URL + "/api/v1/license")
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("status %d, want 200", resp.StatusCode)
-		}
-		var info LicenseInfo
-		if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-			t.Fatal(err)
-		}
-		return info
-	}
-
-	// Licensed: full feature list, edition surfaced.
-	info := get()
-	if info.State != "valid" || info.Edition != "enterprise" || len(info.Features) != len(features.All) {
-		t.Fatalf("licensed info = %+v", info)
-	}
-
-	// Unlicensed: state none, empty (not null) features.
 	features.Init(licensing.None("no license file"))
-	info = get()
+	resp, err := http.Get(srv.URL + "/api/v1/license")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d, want 200", resp.StatusCode)
+	}
+	var info LicenseInfo
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		t.Fatal(err)
+	}
 	if info.State != "none" || len(info.Features) != 0 {
 		t.Fatalf("unlicensed info = %+v", info)
 	}

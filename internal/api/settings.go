@@ -15,11 +15,14 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
 
 	"codedistill/internal/domain"
+	"codedistill/internal/storage"
+	"codedistill/internal/throttle"
 )
 
 // Settings API — generic per-user and per-project key/value endpoints.
@@ -42,6 +45,49 @@ type settingResponse struct {
 	Key       string          `json:"key"`
 	Value     json.RawMessage `json:"value"`
 	UpdatedAt time.Time       `json:"updated_at"`
+	// Default marks a value the server supplied from settingDefaults because no
+	// row exists. Clients that need to distinguish "the user chose this" from
+	// "this is what we ship" can; clients that just want the effective value can
+	// ignore it.
+	Default bool `json:"default,omitempty"`
+}
+
+// settingDefaults holds the keys whose shipped default the SERVER knows. For
+// these, an unset key is not "no such thing" — it is a known value, so the API
+// answers with it instead of 404ing.
+//
+// Sourced from the package that owns the behaviour so there is exactly ONE
+// definition. Before this, throttle.DefaultPause lived in Go while two Svelte
+// components each carried their own literal copy; changing the shipped default
+// would have left the engine and the UI silently disagreeing about what the
+// product does. It also meant every read of an untouched setting was an error
+// by construction, which is what buried the console in 404s (CE-review item 43).
+//
+// Deliberately NOT a catch-all: validSettingKey enforces no schema because
+// settings "grow organically", so inventing a default for an arbitrary key
+// would turn a real not-found into a silent lie. Unregistered keys still 404.
+var settingDefaults = map[string]any{
+	throttle.KeyBatteryPause:      throttle.DefaultPause,
+	throttle.KeyBatteryMultiplier: throttle.DefaultMultiplier,
+	// List-view sort order. 'due' is what the view has always done, so an
+	// upgrade changes nothing until the user picks otherwise.
+	"ui.list.sort": "due",
+}
+
+// defaultSettingValue returns the JSON encoding of a registered default.
+// A marshal failure is reported as "no default" rather than a 500: the honest
+// fallback for a broken default is the pre-existing 404, not a server error on
+// a read path.
+func defaultSettingValue(key string) (json.RawMessage, bool) {
+	v, ok := settingDefaults[key]
+	if !ok {
+		return nil, false
+	}
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return nil, false
+	}
+	return raw, true
 }
 
 func validSettingKey(k string) bool {
@@ -80,6 +126,20 @@ func (s *Server) getUserSetting(w http.ResponseWriter, r *http.Request) {
 	}
 	st, err := s.store.GetUserSetting(r.Context(), uid, key)
 	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			if raw, ok := defaultSettingValue(key); ok {
+				writeJSON(w, http.StatusOK, settingResponse{Key: key, Value: raw, Default: true})
+				return
+			}
+			// 204, not 404: asking a key-value store for something never written
+			// is not a failure. Most settings hold values only the CLIENT cares
+			// about, and it supplies its own default — the server has no business
+			// having an opinion about ui.item_font_size. Registering those
+			// defaults here would copy eighteen frontend values into Go and
+			// recreate the drift item 43 was about. See settingDefaults.
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		writeErr(w, statusFor(err), err)
 		return
 	}
@@ -156,6 +216,12 @@ func (s *Server) getProjectSetting(w http.ResponseWriter, r *http.Request) {
 	}
 	st, err := s.store.GetProjectSetting(r.Context(), pid, key)
 	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			// Same contract as the user endpoint above. Project settings have no
+			// registered defaults today, so an unset key is always 204.
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		writeErr(w, statusFor(err), err)
 		return
 	}

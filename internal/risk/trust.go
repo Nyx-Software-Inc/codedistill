@@ -26,10 +26,10 @@ const TightenSettingKey = "review.tighten_to"
 // The machine owns this ceiling — it never reaches "auto-clear everything"
 // (Critical changes and always-review zones always escalate).
 type Trust struct {
-	Tier  string `json:"tier"` // "New" | "Building" | "Earned"
-	Clean int    `json:"clean"`
-	Failed int   `json:"failed"`
-	Total int    `json:"total"` // verified items = clean + failed
+	Tier   string `json:"tier"` // "New" | "Building" | "Earned"
+	Clean  int    `json:"clean"`
+	Failed int    `json:"failed"`
+	Total  int    `json:"total"` // verified items = clean + failed
 	// EscalateAtOrAbove is the lowest band that escalates at this trust: bands
 	// at or above it need human eyes, below it auto-clear.
 	EscalateAtOrAbove Band   `json:"escalate_at_or_above"`

@@ -23,6 +23,14 @@ first time you contribute.
 ## Ground rules
 
 - Match the surrounding code's style and comment density.
-- `go test ./...` and `npm run check` (under `web/`) must pass.
+- `go test -tags oss ./...` and `npm run check` (under `web/`) must pass.
+  The `-tags oss` is required, not optional: this tree is the community
+  edition, and the paid features are compiled out behind that build tag. A
+  plain `go test ./...` will not compile here, because the counterparts it
+  looks for (Postgres, OIDC, the MCP write tools) live only in the commercial
+  repository. Same for building: use `./build.sh`, which passes the tag.
+- `gofmt -l ./cmd ./internal` must be empty. Run `gofmt -w ./cmd ./internal`
+  before submitting — an editor that formats on save will otherwise put
+  unrelated whitespace churn in your diff.
 - This mirror is generated from a private monorepo per release;
   PRs are cherry-picked inward, so small focused changes merge fastest.

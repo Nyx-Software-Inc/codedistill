@@ -33,8 +33,8 @@ import (
 // enqueue against. Returns the store, the todo id (used as owner_id in
 // queue rows), and a cleanup func.
 type fixture struct {
-	store    *sqlite.Store
-	todoID   string
+	store     *sqlite.Store
+	todoID    string
 	projectID string
 }
 
@@ -67,11 +67,11 @@ func newFixture(t *testing.T) *fixture {
 
 // fakeClient records calls and returns canned responses.
 type fakeClient struct {
-	mu        sync.Mutex
-	calls     []fakeCall
-	resp      *mcpclient.CallResult
-	respErr   error
-	closed    bool
+	mu      sync.Mutex
+	calls   []fakeCall
+	resp    *mcpclient.CallResult
+	respErr error
+	closed  bool
 }
 
 type fakeCall struct {

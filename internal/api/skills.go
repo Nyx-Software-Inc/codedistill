@@ -69,7 +69,7 @@ func (s *Server) createSkill(w http.ResponseWriter, r *http.Request) {
 		Position: req.Position, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.store.CreateSkill(r.Context(), sk); err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
+		writeErr(w, statusFor(err), err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, sk)

@@ -69,8 +69,32 @@ SKIP_MODELS=0
 BIN_PATH=""
 DB_PATH="codedistill.db"
 
+# A heredoc, not `sed -n '2,21p' "$0"`. The range approach encodes a line
+# number that any edit above it silently invalidates — which is exactly what
+# happened when the licence banner was prepended: --help printed twelve lines
+# of copyright, truncated the description mid-sentence, and never reached the
+# flags. Keeping the text beside the parser below means it cannot drift again
+# (CE-review item 21).
 usage() {
-  sed -n '2,21p' "$0" | sed 's/^#\s\?//'
+  cat <<'USAGE'
+CodeDistill — first-run setup for Linux + macOS.
+
+Detects the OS, finds or installs Ollama, verifies it is reachable, pulls the
+models CodeDistill needs (qwen2.5:7b + nomic-embed-text), and initialises the
+local database. Idempotent — safe to re-run if a step failed partway through.
+
+Run from the directory containing the codedistill binary (the zip unpacks this
+script alongside it), or pass --bin <path>.
+
+Usage:
+  ./install.sh                 # interactive prompts before installing anything
+  ./install.sh --yes, -y       # non-interactive; assume yes on the Ollama install
+  ./install.sh --skip-ollama   # Ollama already set up; just pull models + init
+  ./install.sh --skip-models   # set up Ollama + init; pull models later
+  ./install.sh --bin <path>    # path to the codedistill binary
+  ./install.sh --db <path>     # database path (default: codedistill.db)
+  ./install.sh -h, --help      # this message
+USAGE
 }
 
 while [[ $# -gt 0 ]]; do

@@ -15,7 +15,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -50,7 +49,12 @@ func (s *Server) appendNote(w http.ResponseWriter, r *http.Request, ownerType st
 	var req struct {
 		Text string `json:"text"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	// readJSON, not a bare decoder: it sets DisallowUnknownFields. This was the
+	// only handler of 49 that decoded directly, so a note posted with a stray
+	// field was accepted and the field silently dropped, where every sibling
+	// endpoint 400s — and a wrong key reported "note text is required" rather
+	// than naming it (CE-review item 22).
+	if err := readJSON(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
@@ -125,15 +129,10 @@ func (s *Server) getLatestNotes(w http.ResponseWriter, r *http.Request) {
 
 // noteSummary is the one-line preview (first non-blank line, truncated) used in
 // compact timelines and the canvas pulse.
+//
+// Delegates to domain.NoteSummary: internal/mcp had its own copy of this rule
+// that disagreed (no ellipsis) while writing the same column, and both sliced
+// bytes mid-rune (CE-review item 23).
 func noteSummary(text string) string {
-	line := text
-	if i := strings.IndexByte(text, '\n'); i >= 0 {
-		line = text[:i]
-	}
-	line = strings.TrimSpace(line)
-	const max = 120
-	if len(line) > max {
-		return strings.TrimSpace(line[:max]) + "…"
-	}
-	return line
+	return domain.NoteSummary(text)
 }

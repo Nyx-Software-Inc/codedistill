@@ -12,9 +12,7 @@
 ============================================================================= -->
 
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
-  import * as api from '../lib/api';
-  import { loadUserBool } from '../lib/userSettings';
+  import { powerSource, batteryPause, loadBatteryPause } from '../lib/power';
 
   // PowerBadge renders a small "on battery" indicator in the header
   // whenever the host reports SourceBattery. On AC (the common case)
@@ -23,47 +21,20 @@
   //
   // Reflects the throttle policy by reading indexing.battery.pause so
   // the label distinguishes "throttled" from "paused".
-
-  const KEY_PAUSE = 'indexing.battery.pause';
-  const SOURCE_POLL_MS = 10_000;
-  const PAUSE_POLL_MS = 30_000;
+  //
+  // No timers here any more. The power source comes from one shared,
+  // refcounted poller in lib/power.ts, and the pause flag is app-local state
+  // that IndexingSettings pushes into a store — so flipping the toggle updates
+  // this badge in the same tick instead of up to 30s later, and costs zero
+  // requests (CE-review item 43).
 
   type Props = { onClick?: () => void };
   let { onClick }: Props = $props();
 
-  let source = $state<api.PowerSource>('unknown');
-  let paused = $state(false);
+  void loadBatteryPause();
 
-  let sourceTimer: ReturnType<typeof setInterval> | null = null;
-  let pauseTimer: ReturnType<typeof setInterval> | null = null;
-
-  async function refreshSource() {
-    try {
-      source = (await api.getPowerSource()).source;
-    } catch {
-      source = 'unknown';
-    }
-  }
-
-  async function refreshPause() {
-    paused = await loadUserBool(KEY_PAUSE, false);
-  }
-
-  onMount(() => {
-    refreshSource();
-    refreshPause();
-    sourceTimer = setInterval(refreshSource, SOURCE_POLL_MS);
-    // Re-read the pause flag periodically so the badge reflects edits
-    // made in Settings without a hard reload.
-    pauseTimer = setInterval(refreshPause, PAUSE_POLL_MS);
-  });
-
-  onDestroy(() => {
-    if (sourceTimer) clearInterval(sourceTimer);
-    if (pauseTimer) clearInterval(pauseTimer);
-  });
-
-  let visible = $derived(source === 'battery');
+  let visible = $derived($powerSource === 'battery');
+  let paused = $derived($batteryPause ?? false);
   let label = $derived(paused ? 'paused' : 'throttled');
   let title = $derived(
     paused

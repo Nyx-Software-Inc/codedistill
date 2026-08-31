@@ -30,6 +30,7 @@
   import ClaimDialog from './ClaimDialog.svelte';
   import SyncIndicator from './SyncIndicator.svelte';
   import type { UseCaseItem, UseCaseStatus } from '../lib/types';
+  import { PRIORITIES } from '../lib/types';
   import { isUseCaseDone, isUseCaseInProgress } from '../lib/lifecycle';
 
   type Props = {
@@ -113,6 +114,7 @@
         want: draft.want ?? '',
         why: draft.why ?? '',
         status: draft.status,
+        priority: draft.priority,
         target_release: draft.target_release ?? '',
         due_date: draft.due_date ?? '',
         commit_sha: draft.commit_sha ?? '',
@@ -217,6 +219,15 @@
       </label>
 
       <div class="row2">
+        <label class="field">
+          <span>Priority</span>
+          <select bind:value={draft.priority}>
+            {#each PRIORITIES as p}
+              <option value={p}>{p}</option>
+            {/each}
+          </select>
+        </label>
+
         <label class="field">
           <span>Status</span>
           <select bind:value={draft.status}>

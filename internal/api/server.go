@@ -220,8 +220,13 @@ func (s *Server) cookieSecure(r *http.Request) bool {
 	return s.secureCookies || (r != nil && r.TLS != nil)
 }
 
-
-func (s *Server) tokenValue() string {
+// TokenValue returns the CURRENT write-auth token under the lock. Exported
+// because the /mcp transport and the SPA cookie wrapper must resolve the token
+// per request rather than capture it at wiring time: regenerateAuthToken swaps
+// s.authToken, and a captured copy goes stale the moment an admin rotates —
+// leaving the revoked token working and the new one refused. Pass this method
+// as the getter; never pass its result.
+func (s *Server) TokenValue() string {
 	s.authMu.RLock()
 	defer s.authMu.RUnlock()
 	return s.authToken
@@ -509,8 +514,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/kb/{id}/code-anchors", s.requireFeature(features.CodeAnchors, s.createCodeAnchorForOwner(ownerKnowledgeEntry)))
 	mux.HandleFunc("GET /api/v1/use-cases/{id}/code-anchors", s.listCodeAnchorsForOwner(ownerUseCaseItem))
 	mux.HandleFunc("POST /api/v1/use-cases/{id}/code-anchors", s.requireFeature(features.CodeAnchors, s.createCodeAnchorForOwner(ownerUseCaseItem)))
-	mux.HandleFunc("PATCH /api/v1/code-anchors/{id}", s.updateCodeAnchor)
-	mux.HandleFunc("DELETE /api/v1/code-anchors/{id}", s.deleteCodeAnchor)
+	// Gated alongside the ten creation routes above: listing anchors is a free
+	// read, but MUTATING one is the paid authoring capability. Ungated, two
+	// calls got a free user a hand-authored anchor — GET an item's anchors for
+	// an id, then PATCH path/lines/label/provenance (only kind is immutable).
+	// No free internal path is affected: url_detect's refresh and the four
+	// owner-delete cascades call the store directly, not these routes.
+	mux.HandleFunc("PATCH /api/v1/code-anchors/{id}", s.requireFeature(features.CodeAnchors, s.updateCodeAnchor))
+	mux.HandleFunc("DELETE /api/v1/code-anchors/{id}", s.requireFeature(features.CodeAnchors, s.deleteCodeAnchor))
 
 	// Code metrics (UC-100): per-item churn + change-complexity from the
 	// item's commit anchors. Free read — no feature gate.

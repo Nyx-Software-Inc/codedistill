@@ -114,7 +114,7 @@ func (s *Server) uploadBlob(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.store.CreateScratchpadItem(r.Context(), item); err != nil {
 		_ = s.blobs.Delete(r.Context(), uploaded.SHA)
-		writeErr(w, http.StatusInternalServerError, fmt.Errorf("create item: %w", err))
+		writeErr(w, statusFor(err), fmt.Errorf("create item: %w", err))
 		return
 	}
 	// Mirror createItem: a birth entry in the Log + live SSE so other clients

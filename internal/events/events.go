@@ -27,18 +27,18 @@ import "sync"
 // receiving an event rather than receiving a payload. Fine-grained
 // payload events would buy little for our scale.
 const (
-	ItemsChanged       = "items.changed"
-	InboxChanged       = "inbox.changed"
-	TodosChanged       = "todos.changed"
-	BugsChanged        = "bugs.changed"
-	KBChanged          = "kb.changed"
-	UseCasesChanged    = "use_cases.changed"
-	AnchorsChanged     = "anchors.changed"
-	ProjectsChanged    = "projects.changed"
+	ItemsChanged    = "items.changed"
+	InboxChanged    = "inbox.changed"
+	TodosChanged    = "todos.changed"
+	BugsChanged     = "bugs.changed"
+	KBChanged       = "kb.changed"
+	UseCasesChanged = "use_cases.changed"
+	AnchorsChanged  = "anchors.changed"
+	ProjectsChanged = "projects.changed"
 	// FilesChanged fires when the code-index watcher's scan wrote or
 	// deleted chunks — a proxy for "the repo's tree/content moved".
 	// The Files panel refetches its tree on this.
-	FilesChanged = "files.changed"
+	FilesChanged       = "files.changed"
 	ScratchpadsChanged = "scratchpads.changed"
 )
 

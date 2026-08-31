@@ -43,7 +43,7 @@ func NewOIDCAuth(_ context.Context, _, _, _, _ string) (*oidcAuth, error) {
 
 // WithAuth / WithMembershipPolicy are no-ops in the CE (never reached, since
 // NewOIDCAuth errors first) but must exist for main.go to compile.
-func (s *Server) WithAuth(_ *oidcAuth) *Server                  { return s }
+func (s *Server) WithAuth(_ *oidcAuth) *Server                      { return s }
 func (s *Server) WithMembershipPolicy(_ string, _ []string) *Server { return s }
 
 // resolveIdentity is a pass-through in the CE: no OIDC session or per-user

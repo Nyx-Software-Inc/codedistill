@@ -30,7 +30,8 @@ type updateUseCaseReq struct {
 	Role          *string `json:"role,omitempty"`
 	Want          *string `json:"want,omitempty"`
 	Why           *string `json:"why,omitempty"`
-	Status        *string `json:"status,omitempty"` // open | approved | in_progress | completed | rejected
+	Status        *string `json:"status,omitempty"`   // open | approved | in_progress | completed | rejected
+	Priority      *string `json:"priority,omitempty"` // high | medium | low | none
 	TargetRelease *string `json:"target_release,omitempty"`
 	CommitSHA     *string `json:"commit_sha,omitempty"`
 	CommitTag     *string `json:"commit_tag,omitempty"`
@@ -137,6 +138,14 @@ func (s *Server) updateUseCase(w http.ResponseWriter, r *http.Request) {
 	//     marked implemented, even if status later regresses; if the user
 	//     wants to clear them they can pass empty strings explicitly.
 	priorUCStatus := u.Status
+	if req.Priority != nil {
+		if !domain.ValidPriority(*req.Priority) {
+			writeMsg(w, http.StatusBadRequest,
+				fmt.Sprintf("priority %q: must be high, medium, low, or none", *req.Priority))
+			return
+		}
+		u.Priority = *req.Priority
+	}
 	if req.Status != nil {
 		if !domain.ValidUseCaseStatus(*req.Status) {
 			writeMsg(w, http.StatusBadRequest, fmt.Sprintf("status %q: must be open, approved, in_progress, completed, or rejected", *req.Status))

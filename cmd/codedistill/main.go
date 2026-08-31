@@ -32,6 +32,7 @@ import (
 	osuser "os/user"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -80,7 +81,7 @@ func main() {
 	endpoint := flag.String("endpoint", ollama.DefaultEndpoint, "model server endpoint (Ollama, or a self-hosted OpenAI-compatible server)")
 	modelAPI := flag.String("model-api", string(ollama.ProtocolOllama), "model server wire API: ollama | openai (openai = self-hosted OpenAI-compatible endpoint, e.g. vLLM/LM Studio — local-only, no cloud)")
 	content := flag.String("content", "", "content to classify (used by 'classify')")
-	override := flag.String("override", "", "optional Classification_Override for 'classify': todo|bug|kb|skip")
+	override := flag.String("override", "", "optional Classification_Override for 'classify': "+domain.ClassificationOverrideList())
 	addr := flag.String("addr", "127.0.0.1:8080", "HTTP listen address (used by 'serve'). Defaults to localhost; binding a public interface requires write-auth (and you should add TLS).")
 	appWindow := flag.String("app", "auto", "desktop app window for 'serve': auto|on|off. Opens the UI in a Chromium-family app window whose lifetime is tied to the server (close the window -> server stops; stop the server -> window closes). auto = on for interactive desktop sessions only, so services/headless never open windows.")
 	noAuth := flag.Bool("no-auth", false, "disable the API write-auth token gate (DANGEROUS — trusted localhost only; refused on a public bind)")
@@ -202,7 +203,7 @@ examples:
 		if *content == "" {
 			die("classify requires -content (try: codedistill help)")
 		}
-		if err := cmdClassify(dbArg, *model, *endpoint, *content, *override); err != nil {
+		if err := cmdClassify(dbArg, *model, *endpoint, *modelAPI, *content, *override); err != nil {
 			die("classify failed: %v", err)
 		}
 	case "serve":
@@ -215,7 +216,14 @@ examples:
 		}
 	case "license":
 		if err := cmdLicense(dbArg, *licensePath, flag.Args()[1:]); err != nil {
-			die("license %s failed: %v", flag.Arg(1), err)
+			// No caller-side prefix: cmdLicense's errors are all self-describing,
+			// and the two usage strings already name the command. The old
+			// "license %s failed:" interpolated flag.Arg(1), which is EMPTY for a
+			// bare `codedistill license` — producing "license  failed: usage: …",
+			// i.e. a doubled space, the word "failed" in front of a help message,
+			// and "license" twice in one line. This is the first command a paying
+			// customer types (CE-review item 25).
+			die("%v", err)
 		}
 	case "embed-backfill":
 		if err := cmdEmbedBackfill(dbArg, *endpoint); err != nil {
@@ -230,17 +238,22 @@ examples:
 			die("index-code failed: %v", err)
 		}
 	case "reset":
+		// dbArg, not *dbPath. These two destructive commands were the only ones
+		// reading the raw -db value instead of the effective database, so on a
+		// Postgres install they silently operated on whatever codedistill.db
+		// happened to be in the working directory — deleting it and reporting
+		// success while Postgres went untouched (CE-review item 14).
 		if !*force {
-			die("reset is destructive and requires -force; would delete %q", *dbPath)
+			die("reset is destructive and requires -force; would delete %q", dbArg)
 		}
-		removed, err := cmdReset(*dbPath)
+		removed, err := cmdReset(dbArg)
 		if err != nil {
 			die("reset failed: %v", err)
 		}
 		if removed {
-			fmt.Printf("reset: removed %s\n", *dbPath)
+			fmt.Printf("reset: removed %s\n", dbArg)
 		} else {
-			fmt.Printf("reset: no database at %s (nothing to do)\n", *dbPath)
+			fmt.Printf("reset: no database at %s (nothing to do)\n", dbArg)
 		}
 	case "backup":
 		dest, err := cmdBackup(dbArg, *out)
@@ -249,10 +262,13 @@ examples:
 		}
 		fmt.Printf("backup: wrote %s\n", dest)
 	case "restore":
-		if err := cmdRestore(*dbPath, flag.Arg(1), *force); err != nil {
+		// dbArg for the same reason as reset above: restore would otherwise
+		// overwrite a local SQLite file while the operator believed they were
+		// restoring the Postgres database they selected.
+		if err := cmdRestore(dbArg, flag.Arg(1), *force); err != nil {
 			die("restore failed: %v", err)
 		}
-		fmt.Printf("restore: restored %s from %s\n", *dbPath, flag.Arg(1))
+		fmt.Printf("restore: restored %s from %s\n", dbArg, flag.Arg(1))
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", flag.Arg(0))
 		flag.Usage()
@@ -354,6 +370,13 @@ func copyFile(src, dst string) error {
 // Returns (removed, err). removed=false with err=nil means the file was
 // already absent — nothing to do, not a failure.
 func cmdReset(dbPath string) (bool, error) {
+	// Mirrors cmdBackup. Without it a DSN fell through to os.Stat, missed, and
+	// reported "nothing to do" — or, when the caller passed the raw -db default
+	// instead of the effective database, deleted an unrelated SQLite file and
+	// called it success.
+	if strings.HasPrefix(dbPath, "postgres://") || strings.HasPrefix(dbPath, "postgresql://") {
+		return false, fmt.Errorf("reset is SQLite-only; for the Postgres backend drop and recreate the database with psql")
+	}
 	if _, err := os.Stat(dbPath); errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	} else if err != nil {
@@ -411,7 +434,15 @@ func cmdInit(dbPath string) error {
 	return store.Migrate(context.Background())
 }
 
-func cmdClassify(dbPath, model, endpoint, content, override string) error {
+func cmdClassify(dbPath, model, endpoint, modelAPI, content, override string) error {
+	// Before opening storage, so a typo'd flag neither reaches the INSERT nor
+	// creates a database as a side effect. Unvalidated, this surfaced as a raw
+	// two-line "CHECK constraint failed … (275)" from SQLite — on the command
+	// --help calls the smoke test (CE-review item 24).
+	if !domain.ValidClassificationOverride(override) {
+		return fmt.Errorf("invalid -override %q (want %s)", override, domain.ClassificationOverrideList())
+	}
+
 	ctx := context.Background()
 
 	store, err := sqlite.OpenDSN(dbPath)
@@ -440,8 +471,20 @@ func cmdClassify(dbPath, model, endpoint, content, override string) error {
 	}
 	fmt.Printf("created scratchpad item %s\n", itemID)
 
-	cl := ollama.New(ollama.WithModel(model), ollama.WithEndpoint(endpoint))
-	classifier := &agent.OllamaClassifier{Generate: cl.GenerateJSON}
+	// This must build the SAME model stack as serve (:527-536). `classify` is
+	// advertised in --help as a smoke test, so a stack that differs from the
+	// server's is worse than no smoke test — it gives false confidence when it
+	// passes and a false alarm when it diverges. Two pieces have to match:
+	// WithProtocol, so -model-api openai reaches an OpenAI-compatible endpoint
+	// instead of 404ing against Ollama's wire format; and GenerateModel+ModelFor,
+	// so the per-project model.classifier setting is honoured rather than
+	// silently falling back to the model-less path (CE-review item 12).
+	cl := ollama.New(ollama.WithModel(model), ollama.WithEndpoint(endpoint),
+		ollama.WithProtocol(ollama.ParseProtocol(modelAPI)))
+	classifier := &agent.OllamaClassifier{
+		GenerateModel: cl.GenerateJSONWithModel,
+		ModelFor:      projectModel(store, "classifier"),
+	}
 	ag := agent.New(store, classifier)
 
 	start := time.Now()
@@ -467,6 +510,13 @@ func cmdClassify(dbPath, model, endpoint, content, override string) error {
 //
 // When ollamaAutostart is true, a Supervisor probes the endpoint and spawns
 // `ollama serve` if nothing's there. The child is killed during shutdown.
+// ensureOllamaRunning is a seam. The supervisor starts a real child process, so
+// tests that need to exercise cmdServe's cleanup paths replace this rather than
+// spawning Ollama on the developer's machine.
+var ensureOllamaRunning = func(ctx context.Context, sup *ollama.Supervisor) (func(), error) {
+	return sup.EnsureRunning(ctx)
+}
+
 func cmdServe(dbPath, model, endpoint, modelAPI, addr, appWindow string, ollamaAutostart bool, ollamaBin, licensePath string, noAuth, secureCookies bool) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -500,11 +550,24 @@ func cmdServe(dbPath, model, endpoint, modelAPI, addr, appWindow string, ollamaA
 	// Auto-start Ollama before the agent so the first classification attempt
 	// doesn't hit a dead socket. A no-op if Ollama is already running.
 	stopOllama := func() {}
+	// Cleanup must run on EVERY exit, not just the clean one. Five paths below
+	// returned while leaving the child we started alive — each orphan holds its
+	// model resident, which since desktop provisioning landed means ~9GB for
+	// qwen2.5:14b (CE-review item 16).
+	//
+	// sync.Once matters because the happy path still calls this explicitly at the
+	// end, where the ORDER is load-bearing: Ollama must outlive the agent drain so
+	// in-flight classifications can finish. This defer is the backstop for
+	// abnormal exits; on the clean path it is a no-op because the explicit call
+	// already ran.
+	var stopOnce sync.Once
+	stopOllamaOnce := func() { stopOnce.Do(func() { stopOllama() }) }
+	defer stopOllamaOnce()
 	// Only autostart the local Ollama binary when we're actually talking to
 	// Ollama — an OpenAI-compatible endpoint is the user's own running server.
 	if ollamaAutostart && ollama.ParseProtocol(modelAPI) == ollama.ProtocolOllama {
 		sup := &ollama.Supervisor{Endpoint: endpoint, BinPath: ollamaBin, Log: logger}
-		stop, err := sup.EnsureRunning(ctx)
+		stop, err := ensureOllamaRunning(ctx, sup)
 		if err != nil {
 			return fmt.Errorf("ollama supervisor: %w", err)
 		}
@@ -566,6 +629,11 @@ func cmdServe(dbPath, model, endpoint, modelAPI, addr, appWindow string, ollamaA
 	if exportHook != nil {
 		agentOpts = append(agentOpts, agent.WithExportNotify(exportHook.Notify))
 	}
+	// Auto-anchoring is paid. WithCodeAnchors is the authoritative gate — it also
+	// covers the embedded-chunk search, which WithProjectFileTree does not reach
+	// and which used to auto-anchor unlicensed whenever a database still carried
+	// chunks from an earlier licensed run (CE-review item 28).
+	agentOpts = append(agentOpts, agent.WithCodeAnchors(features.Enabled(features.CodeAnchors)))
 	if features.Enabled(features.CodeAnchors) {
 		agentOpts = append(agentOpts, agent.WithProjectFileTree(projectFileTreeLookup(store)))
 	}
@@ -785,8 +853,11 @@ func cmdServe(dbPath, model, endpoint, modelAPI, addr, appWindow string, ollamaA
 	}
 	if !isLocalBind(addr) {
 		if apiToken == "" {
-			logger.Error("refusing to serve on a non-localhost address without write-auth — bind 127.0.0.1, or drop -no-auth", "addr", addr)
-			os.Exit(1)
+			// Returns rather than os.Exit: deferred cleanup never runs on
+			// os.Exit, so this guard used to orphan Ollama unstoppably — and it
+			// is the guard a user trips repeatedly while getting -addr right.
+			// main's dispatch still exits 1 via die().
+			return fmt.Errorf("refusing to serve on a non-localhost address (%s) without write-auth — bind 127.0.0.1, or drop -no-auth", addr)
 		}
 		logger.Warn("serving on a non-localhost address: reads are UNAUTHENTICATED — front it with TLS + a reverse proxy", "addr", addr)
 	}
@@ -798,8 +869,11 @@ func cmdServe(dbPath, model, endpoint, modelAPI, addr, appWindow string, ollamaA
 	// require the API token at call time over HTTP (stdio is trusted-local).
 	mcpWrites := features.Enabled(features.MCPServer)
 	mcpSrv := mcppkg.NewServer(store, version, ag, verifier, blobs, api.DefaultBlobConfig().URLTTL, mcpWrites, func() { bus.Publish(events.ItemsChanged) })
+	// apiSrv.TokenValue (the METHOD, not its result) so /mcp resolves the token
+	// per request — a captured copy survives a rotation and keeps honouring the
+	// revoked token while refusing the new one.
 	root.Handle("/mcp", mcpserver.NewStreamableHTTPServer(mcpSrv,
-		mcpserver.WithHTTPContextFunc(mcppkg.AuthContextFunc(apiToken))))
+		mcpserver.WithHTTPContextFunc(mcppkg.AuthContextFunc(apiSrv.TokenValue))))
 	// .webmanifest isn't in Go's built-in MIME table; without this the
 	// PWA manifest serves as text/plain and Chrome refuses to install.
 	_ = mime.AddExtensionType(".webmanifest", "application/manifest+json")
@@ -807,7 +881,7 @@ func cmdServe(dbPath, model, endpoint, modelAPI, addr, appWindow string, ollamaA
 	if apiToken != "" {
 		// Set the first-party auth cookie when serving the app shell so the
 		// SPA can make write requests without the token ever touching JS.
-		spa = withAuthCookie(apiToken, secureCookies, spa)
+		spa = withAuthCookie(apiSrv.TokenValue, secureCookies, spa)
 	}
 	root.Handle("/", spa)
 
@@ -824,6 +898,21 @@ func cmdServe(dbPath, model, endpoint, modelAPI, addr, appWindow string, ollamaA
 		Addr:              addr,
 		Handler:           root,
 		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	// Appropriate Legal Notice on startup. The binding obligation for a
+	// network-served UI is AGPL-3.0 §13 (offer the Corresponding Source to
+	// remote users), which the web UI's About dialog carries; this is the
+	// console-side counterpart for anyone running `serve` headless, where that
+	// dialog is never seen.
+	if features.OSSBuild {
+		logger.Info("CodeDistill Community Edition — Copyright (c) 2026 Nyx Software, Inc. " +
+			"Free software under the GNU AGPL-3.0, with ABSOLUTELY NO WARRANTY. " +
+			"Source: https://github.com/Nyx-Software-Inc/codedistill")
+	} else {
+		logger.Info("CodeDistill — Copyright (c) 2026 Nyx Software, Inc. " +
+			"Licensed commercially; also published as free software under the GNU AGPL-3.0. " +
+			"Source: https://github.com/Nyx-Software-Inc/codedistill")
 	}
 
 	serveErr := make(chan error, 1)
@@ -868,7 +957,8 @@ func cmdServe(dbPath, model, endpoint, modelAPI, addr, appWindow string, ollamaA
 	}
 	ag.Stop()
 	// Stop Ollama only after the agent drains — in-flight classifications need it.
-	stopOllama()
+	// Via the Once so the backstop defer above doesn't stop it a second time.
+	stopOllamaOnce()
 	logger.Info("stopped cleanly")
 	return nil
 }
@@ -974,7 +1064,10 @@ func cmdLicense(dbPath, licensePath string, args []string) error {
 		}
 		raw, err := os.ReadFile(args[1])
 		if err != nil {
-			return err
+			// Context belongs here now that the dispatch site adds no prefix —
+			// otherwise this surfaced as a bare "open /x: no such file or
+			// directory" with nothing saying it was a license install.
+			return fmt.Errorf("read license file: %w", err)
 		}
 		// Verify before installing — a typo'd or corrupt file should
 		// fail here, not silently downgrade the next serve. VerifyAny checks
@@ -988,7 +1081,7 @@ func cmdLicense(dbPath, licensePath string, args []string) error {
 		dest, _ := licensing.ResolvePath(licensePath, dbPath)
 		// 0600: least-privilege — only the owner running serve needs to read it.
 		if err := os.WriteFile(dest, raw, 0o600); err != nil {
-			return err
+			return fmt.Errorf("install license: %w", err)
 		}
 		fmt.Printf("installed %s license for %q at %s\n", st.License.Edition, st.License.Customer, dest)
 		fmt.Println("restart `codedistill serve` to apply")
@@ -1384,9 +1477,14 @@ func isLocalBind(addr string) bool {
 // withAuthCookie sets the first-party HttpOnly auth cookie on responses
 // from the SPA handler, so the served app can make write requests without
 // the token ever being readable by page JS.
-func withAuthCookie(token string, secure bool, next http.Handler) http.Handler {
+//
+// token is a getter for the same reason /mcp takes one: stamping a captured
+// value meant that after a rotation every app-shell load re-wrote the browser's
+// cookie with the REVOKED token, so the UI's own writes started failing until
+// the process restarted — "Regenerate token" broke the app that offers it.
+func withAuthCookie(token func() string, secure bool, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		api.SetAuthCookie(w, token, secure || r.TLS != nil)
+		api.SetAuthCookie(w, token(), secure || r.TLS != nil)
 		next.ServeHTTP(w, r)
 	})
 }

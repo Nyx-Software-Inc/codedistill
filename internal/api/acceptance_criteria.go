@@ -126,7 +126,7 @@ func (s *Server) createAcceptanceCriterionForOwner(ownerType string) http.Handle
 			UpdatedAt:        now,
 		}
 		if err := s.store.CreateAcceptanceCriterion(r.Context(), c); err != nil {
-			writeErr(w, http.StatusInternalServerError, err)
+			writeErr(w, statusFor(err), err)
 			return
 		}
 		writeJSON(w, http.StatusCreated, c)

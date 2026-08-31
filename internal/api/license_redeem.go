@@ -146,7 +146,13 @@ func (s *Server) doRedeem(w http.ResponseWriter, r *http.Request, code string) {
 	}
 	// Sanity-verify BEFORE installing: the returned file must be a trusted,
 	// valid license for THIS machine. Refuse to write anything else.
-	st := licensing.VerifyAny(lic, s.redeem.trustList(), time.Now().UTC(), fp, "")
+	// s.build.Version, not "": that argument feeds BOTH range guards in
+	// licensing.Verify. splitVersion("") is the zero array, so an empty value
+	// refused every license carrying min_version ("… requires version >= X
+	// (running )") while making the max_version guard unreachable for every
+	// possible input — an out-of-window license installed here and was then
+	// refused at the next serve by main.go, which passes the real version.
+	st := licensing.VerifyAny(lic, s.redeem.trustList(), time.Now().UTC(), fp, s.build.Version)
 	if st.State != licensing.StateValid && st.State != licensing.StateGrace {
 		writeMsg(w, http.StatusBadGateway, "activation service returned an unusable license: "+st.Reason)
 		return

@@ -22,135 +22,6 @@ import (
 
 // --- Manual anchor CRUD (kind=file) ---
 
-func TestCodeAnchorAPI_CreateFileAnchor(t *testing.T) {
-	srv, _ := setup(t)
-
-	var p domain.Project
-	doJSON(t, srv, "POST", "/api/v1/projects", map[string]string{"name": "p"}, 201, &p)
-	var sp domain.Scratchpad
-	doJSON(t, srv, "POST", "/api/v1/projects/"+p.ID+"/scratchpads",
-		map[string]string{"name": "extra"}, 201, &sp)
-	var item domain.ScratchpadItem
-	doJSON(t, srv, "POST", "/api/v1/scratchpads/"+sp.ID+"/items",
-		map[string]string{"content": "placeholder"}, 201, &item)
-
-	var anchor domain.CodeAnchor
-	doJSON(t, srv, "POST", "/api/v1/items/"+item.ID+"/code-anchors", map[string]any{
-		"kind":       "file",
-		"path":       "internal/api/scratchpads.go",
-		"line_start": 62,
-		"line_end":   80,
-		"revision":   "a1b2c3d4",
-	}, 201, &anchor)
-	if anchor.ID == "" {
-		t.Fatal("no ID returned")
-	}
-	if anchor.OwnerType != "scratchpad_item" || anchor.OwnerID != item.ID {
-		t.Errorf("owner mismatch: %+v", anchor)
-	}
-	if anchor.Kind != "file" || anchor.Path != "internal/api/scratchpads.go" {
-		t.Errorf("fields wrong: %+v", anchor)
-	}
-	if anchor.LineStart != 62 || anchor.LineEnd != 80 {
-		t.Errorf("lines wrong: %+v", anchor)
-	}
-	if anchor.Provenance != "user-set" {
-		t.Errorf("default provenance = %q, want user-set", anchor.Provenance)
-	}
-
-	// List.
-	var list []*domain.CodeAnchor
-	doJSON(t, srv, "GET", "/api/v1/items/"+item.ID+"/code-anchors", nil, 200, &list)
-	if len(list) != 1 || list[0].ID != anchor.ID {
-		t.Errorf("list: %+v", list)
-	}
-
-	// Patch.
-	var patched domain.CodeAnchor
-	doJSON(t, srv, "PATCH", "/api/v1/code-anchors/"+anchor.ID, map[string]any{
-		"path":       "internal/api/scratchpads.go",
-		"line_start": 100,
-		"line_end":   120,
-		"label":      "updated range",
-	}, 200, &patched)
-	if patched.LineStart != 100 || patched.Label != "updated range" {
-		t.Errorf("patch not applied: %+v", patched)
-	}
-
-	// Delete.
-	doJSON(t, srv, "DELETE", "/api/v1/code-anchors/"+anchor.ID, nil, 204, nil)
-	doJSON(t, srv, "GET", "/api/v1/items/"+item.ID+"/code-anchors", nil, 200, &list)
-	if len(list) != 0 {
-		t.Errorf("should be empty after delete: %+v", list)
-	}
-}
-
-func TestCodeAnchorAPI_ValidationErrors(t *testing.T) {
-	srv, _ := setup(t)
-
-	var p domain.Project
-	doJSON(t, srv, "POST", "/api/v1/projects", map[string]string{"name": "p"}, 201, &p)
-	var sp domain.Scratchpad
-	doJSON(t, srv, "POST", "/api/v1/projects/"+p.ID+"/scratchpads",
-		map[string]string{"name": "extra"}, 201, &sp)
-	var item domain.ScratchpadItem
-	doJSON(t, srv, "POST", "/api/v1/scratchpads/"+sp.ID+"/items",
-		map[string]string{"content": "placeholder"}, 201, &item)
-
-	path := "/api/v1/items/" + item.ID + "/code-anchors"
-
-	// Bad kind.
-	doJSON(t, srv, "POST", path, map[string]any{"kind": "bogus"}, 400, nil)
-
-	// file without path.
-	doJSON(t, srv, "POST", path, map[string]any{"kind": "file"}, 400, nil)
-
-	// file with reversed line range.
-	doJSON(t, srv, "POST", path, map[string]any{
-		"kind": "file", "path": "foo.go", "line_start": 50, "line_end": 30,
-	}, 400, nil)
-
-	// file with invalid revision.
-	doJSON(t, srv, "POST", path, map[string]any{
-		"kind": "file", "path": "foo.go", "revision": "not-hex",
-	}, 400, nil)
-
-	// commit without revision.
-	doJSON(t, srv, "POST", path, map[string]any{"kind": "commit"}, 400, nil)
-
-	// commit with too-short SHA.
-	doJSON(t, srv, "POST", path, map[string]any{"kind": "commit", "revision": "abc"}, 400, nil)
-
-	// pr without url.
-	doJSON(t, srv, "POST", path, map[string]any{"kind": "pr"}, 400, nil)
-
-	// Unknown owner → 404.
-	doJSON(t, srv, "POST", "/api/v1/items/no-such-id/code-anchors",
-		map[string]any{"kind": "commit", "revision": "abcd123"}, 404, nil)
-}
-
-func TestCodeAnchorAPI_PatchCannotChangeKind(t *testing.T) {
-	srv, _ := setup(t)
-
-	var p domain.Project
-	doJSON(t, srv, "POST", "/api/v1/projects", map[string]string{"name": "p"}, 201, &p)
-	var sp domain.Scratchpad
-	doJSON(t, srv, "POST", "/api/v1/projects/"+p.ID+"/scratchpads",
-		map[string]string{"name": "extra"}, 201, &sp)
-	var item domain.ScratchpadItem
-	doJSON(t, srv, "POST", "/api/v1/scratchpads/"+sp.ID+"/items",
-		map[string]string{"content": "placeholder"}, 201, &item)
-
-	var a domain.CodeAnchor
-	doJSON(t, srv, "POST", "/api/v1/items/"+item.ID+"/code-anchors", map[string]any{
-		"kind": "commit", "revision": "abcd1234",
-	}, 201, &a)
-
-	doJSON(t, srv, "PATCH", "/api/v1/code-anchors/"+a.ID, map[string]any{
-		"kind": "pr", "url": "https://github.com/x/y/pull/1",
-	}, 400, nil)
-}
-
 // --- URL auto-detect ---
 
 func TestCodeAnchorURLAutoDetect_GitHubBlobWithLineRange(t *testing.T) {
@@ -207,7 +78,7 @@ func TestCodeAnchorURLAutoDetect_GitHubPR(t *testing.T) {
 }
 
 func TestCodeAnchorURLAutoDetect_RefreshOnContentUpdate(t *testing.T) {
-	srv, _ := setup(t)
+	srv, _, store := setupWithStore(t)
 	var p domain.Project
 	doJSON(t, srv, "POST", "/api/v1/projects", map[string]string{"name": "p"}, 201, &p)
 	var sp domain.Scratchpad
@@ -218,11 +89,12 @@ func TestCodeAnchorURLAutoDetect_RefreshOnContentUpdate(t *testing.T) {
 	doJSON(t, srv, "POST", "/api/v1/scratchpads/"+sp.ID+"/items",
 		map[string]string{"content": "first https://github.com/foo/bar/pull/1"}, 201, &item)
 
-	// Add a user-set anchor that must survive the URL re-detection pass.
-	var userAnchor domain.CodeAnchor
-	doJSON(t, srv, "POST", "/api/v1/items/"+item.ID+"/code-anchors", map[string]any{
-		"kind": "commit", "revision": "abcd1234",
-	}, 201, &userAnchor)
+	// Add a user-set anchor that must survive the URL re-detection pass. Seeded
+	// through the store, not the paid POST route: this test is about the FREE
+	// url-detection pass, and the anchor is only fixture — so it stays in the
+	// community suite instead of being tagged out with the paid coverage.
+	seedCodeAnchor(t, store, "scratchpad_item", item.ID, domain.CodeAnchor{
+		Kind: "commit", Revision: "abcd1234"})
 
 	// Replace content with a different URL; the old url-detected PR anchor
 	// should disappear and the new one should appear.

@@ -29,10 +29,15 @@ if command -v npm > /dev/null && [ -d web ]; then
   echo "==> frontend"
   pushd web > /dev/null
   if [ ! -d node_modules ]; then
-    echo "    node_modules missing — running npm install"
-    npm install
+    echo "    node_modules missing — running npm ci"
+    npm ci
   fi
-  npm pkg set version="$VERSION" > /dev/null
+  # NOTE: web/package.json's version is deliberately NOT synced here. Nothing
+  # consumes it — the PWA manifest carries no version field, no source file reads
+  # it, and the UI gets its version from the Go API (/api/v1/version, injected via
+  # ldflags below). Writing it only dirtied a TRACKED file on every build, which
+  # left the tree modified mid-release and shipped a stale version into the CE
+  # mirror (git archive takes the COMMITTED value). CE-review item 17.
   npm run build
   popd > /dev/null
 else

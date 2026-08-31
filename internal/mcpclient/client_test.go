@@ -91,13 +91,19 @@ func TestListTools_AgainstCodedistillServer(t *testing.T) {
 		t.Fatalf("expected >=8 tools, got %d", len(tools))
 	}
 
+	// Read tools are present in EVERY build — "MCP read free" is the funnel
+	// hook. Write tools exist only where the mcp feature is compiled in, so the
+	// expectation for those comes from expectedWriteTools, which differs by
+	// build tag. Keeping one test rather than splitting the file means the
+	// community build still verifies its own catalog (CE-review item 9).
 	wantNames := map[string]bool{
 		"list_projects":    false,
 		"list_scratchpads": false,
 		"list_todos":       false,
 		"read_item":        false,
-		"create_anchor":    false,
-		"mark_implemented": false,
+	}
+	for _, n := range expectedWriteTools {
+		wantNames[n] = false
 	}
 	for _, tool := range tools {
 		if _, ok := wantNames[tool.Name]; ok {

@@ -37,6 +37,8 @@ type fakeActivation struct {
 	seenCodes  []string
 	refuse     int    // when non-zero, respond with this status
 	refuseBody string // body for the refusal
+	minVersion string // when set, the signed payload carries this min_version
+	maxVersion string // when set, the signed payload carries this max_version
 }
 
 func (f *fakeActivation) handler() http.HandlerFunc {
@@ -54,8 +56,10 @@ func (f *fakeActivation) handler() http.HandlerFunc {
 		lic, _ := licensing.Sign(&licensing.Payload{
 			LicenseID: "lt", Customer: "Redeem Tester", Edition: "pro",
 			Features: []string{"mcp"}, IssuedAt: time.Now().UTC(),
-			ExpiresAt: time.Now().UTC().AddDate(1, 0, 0),
-			Lock:      licensing.Lock{Type: "machine", FP: req.Fingerprint},
+			ExpiresAt:  time.Now().UTC().AddDate(1, 0, 0),
+			Lock:       licensing.Lock{Type: "machine", FP: req.Fingerprint},
+			MinVersion: f.minVersion,
+			MaxVersion: f.maxVersion,
 		}, f.priv)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"license":  base64.StdEncoding.EncodeToString(lic),
@@ -127,4 +131,117 @@ func apiSrvFromTest(t *testing.T, _ *httptest.Server) *Server {
 		t.Fatal("newTestServer did not record the Server")
 	}
 	return lastTestServer
+}
+
+// TestLicenseRedeemVersionRange pins the complete consumer set of the build version
+// that redemption hands to licensing.VerifyAny. Verify reads that one argument in TWO
+// guards — MinVersion at licensing.go:215 and MaxVersion at :219 — and the two move in
+// OPPOSITE directions once the argument stops being "": a satisfied minimum goes from
+// refused to accepted, and an exceeded maximum goes from accepted to refused. The name
+// says "range" because the population is both guards.
+//
+// Each guard is bracketed in both directions, and three of the four arms fail against
+// base source. The max direction is the load-bearing one: splitVersion("") is the zero
+// version, so compareVersions("", max) > 0 can never hold and that guard was unreachable
+// at redemption, which let a licence whose coverage window had ended install even though
+// the CLI path — which passes the real version — refuses the same file at the next start.
+// The min direction shows the same empty argument as `license requires version >= X
+// (running )`, the blank "running" value being the tell.
+//
+// max_version ABOVE the running version is the deliberate control: it is correct on both
+// sides of the fix. Without it, a carrier whose every arm failed at base could be
+// satisfied by an implementation that refused every versioned licence.
+//
+// The running version is NUMERIC and that is load-bearing rather than cosmetic: the
+// shared api harness builds its Server with Version "test", and splitVersion("test") is
+// ALSO the zero version, so a carrier inheriting the default would reach the same verdict
+// on both sides and observe nothing. Both refusal arms assert the RENDERED running
+// version for the same reason — that string is what distinguishes the real version
+// from "".
+func TestLicenseRedeemVersionRange(t *testing.T) {
+	const running = "1.2.3"
+
+	redeemWith := func(t *testing.T, minVersion, maxVersion string) (int, string) {
+		t.Helper()
+		pub, priv, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fake := &fakeActivation{priv: priv, minVersion: minVersion, maxVersion: maxVersion}
+		act := httptest.NewServer(fake.handler())
+		t.Cleanup(act.Close)
+
+		srv, _, _ := setupWithStore(t)
+		s := apiSrvFromTest(t, srv)
+		// The harness default is "test", which compares equal to "": see above.
+		s.build.Version = running
+		s.redeem = &redeemConfig{
+			dest: filepath.Join(t.TempDir(), licensing.FileName), activateURL: act.URL,
+			pubkeys: []ed25519.PublicKey{pub},
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/license/redeem",
+			strings.NewReader(`{"claim_code":"cdk_minver"}`))
+		rec := httptest.NewRecorder()
+		s.redeemLicense(rec, req)
+		return rec.Code, rec.Body.String()
+	}
+
+	// One refusal assertion for both guards. The reason is DECODED rather than
+	// substring-matched on the raw body: writeMsg emits JSON and Go escapes ">" as
+	// \u003e, so a raw match fails on a body that is in fact correct.
+	assertRefused := func(t *testing.T, code int, body, want string) {
+		t.Helper()
+		if code != http.StatusBadGateway {
+			t.Fatalf("status %d, want 502; body %s", code, body)
+		}
+		var refusal struct {
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(body), &refusal); err != nil {
+			t.Fatalf("refusal body is not JSON: %v\nbody: %s", err, body)
+		}
+		if !strings.Contains(refusal.Error, want) {
+			t.Errorf("refusal reason %q does not contain %q; a blank running value means the "+
+				"build version never reached VerifyAny", refusal.Error, want)
+		}
+	}
+
+	// --- min_version BELOW the running version: redemption must succeed --------
+	// Discriminating for the min guard. At base this is a 502, because "" compares
+	// below every non-zero minimum.
+	t.Run("min_version below the running version is accepted", func(t *testing.T) {
+		code, body := redeemWith(t, "1.0.0", "")
+		if code != http.StatusOK {
+			t.Fatalf("redeem with min_version 1.0.0 and running %s: status %d, body %s; the "+
+				"server must verify against its own build version", running, code, body)
+		}
+	})
+
+	// --- min_version ABOVE the running version: still refused ------------------
+	// Proves the fix passes the REAL version rather than disabling the check, and the
+	// rendered running value proves which version reached the verifier.
+	t.Run("min_version above the running version is refused with the running version named", func(t *testing.T) {
+		code, body := redeemWith(t, "2.0.0", "")
+		assertRefused(t, code, body, "license requires version >= 2.0.0 (running "+running+")")
+	})
+
+	// --- max_version ABOVE the running version: redemption must succeed --------
+	// The control for the max guard. It passes at base too, and it has to: without it
+	// the arm below could be satisfied by refusing every max_version license.
+	t.Run("max_version above the running version is accepted", func(t *testing.T) {
+		code, body := redeemWith(t, "", "2.0.0")
+		if code != http.StatusOK {
+			t.Fatalf("redeem with max_version 2.0.0 and running %s: status %d, body %s; a "+
+				"license covering this release must install", running, code, body)
+		}
+	})
+
+	// --- max_version BELOW the running version: must be refused ---------------
+	// Discriminating for the max guard, and the arm that fails at base in the
+	// ACCEPT -> REFUSE direction: with "" the comparison can never exceed the bound, so
+	// the guard was dead and an out-of-coverage license installed silently.
+	t.Run("max_version below the running version is refused with the running version named", func(t *testing.T) {
+		code, body := redeemWith(t, "", "1.0.0")
+		assertRefused(t, code, body, "license covers versions up to 1.0.0 (running "+running+")")
+	})
 }

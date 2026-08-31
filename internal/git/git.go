@@ -198,12 +198,12 @@ func (r *Repo) WorkingMtime(path string) (time.Time, error) {
 // CommitInfo is a flat shape of the commit fields the frontend needs to
 // render a commit list and pick a revision.
 type CommitInfo struct {
-	SHA       string    `json:"sha"`
-	ShortSHA  string    `json:"short_sha"`
-	Author    string    `json:"author"`
-	Email     string    `json:"email"`
-	Date      time.Time `json:"date"`
-	Subject   string    `json:"subject"`
+	SHA      string    `json:"sha"`
+	ShortSHA string    `json:"short_sha"`
+	Author   string    `json:"author"`
+	Email    string    `json:"email"`
+	Date     time.Time `json:"date"`
+	Subject  string    `json:"subject"`
 }
 
 // FileCommits walks commits that touched the given path, newest first, up to

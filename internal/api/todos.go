@@ -131,7 +131,7 @@ func (s *Server) createTodo(w http.ResponseWriter, r *http.Request) {
 		Origin: "manual", CreatedAt: time.Now().UTC(),
 	}
 	if err := s.store.CreateTodoItem(r.Context(), t); err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
+		writeErr(w, statusFor(err), err)
 		return
 	}
 	// Legacy `notes` in the payload becomes the item's first activity-log note

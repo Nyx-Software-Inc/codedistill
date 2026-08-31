@@ -495,6 +495,7 @@ export const updateUseCase = (
     want?: string;
     why?: string;
     status?: UseCaseStatus;
+    priority?: Priority;
     target_release?: string;
     commit_sha?: string;
     commit_tag?: string;
@@ -1091,8 +1092,11 @@ export interface SettingResponse {
 }
 
 
+/** Resolves to undefined when the key has never been set — the server answers
+ *  204 No Content rather than 404, because asking for an unwritten setting is
+ *  not an error. Callers supply their own default (CE-review item 43). */
 export const getUserSetting = (userId: string, key: string) =>
-  req<SettingResponse>('GET', `/users/${userId}/settings/${encodeURIComponent(key)}`);
+  req<SettingResponse | undefined>('GET', `/users/${userId}/settings/${encodeURIComponent(key)}`);
 
 export const setUserSetting = (userId: string, key: string, value: unknown) =>
   req<SettingResponse>('PUT', `/users/${userId}/settings/${encodeURIComponent(key)}`, { value });
@@ -1102,7 +1106,7 @@ export const deleteUserSetting = (userId: string, key: string) =>
 
 
 export const getProjectSetting = (projectId: string, key: string) =>
-  req<SettingResponse>('GET', `/projects/${projectId}/settings/${encodeURIComponent(key)}`);
+  req<SettingResponse | undefined>('GET', `/projects/${projectId}/settings/${encodeURIComponent(key)}`);
 
 export const setProjectSetting = (projectId: string, key: string, value: unknown) =>
   req<SettingResponse>('PUT', `/projects/${projectId}/settings/${encodeURIComponent(key)}`, { value });

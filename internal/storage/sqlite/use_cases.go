@@ -18,6 +18,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"codedistill/internal/domain"
@@ -28,11 +29,32 @@ const useCaseColumns = `
 	id, project_id, creator_id, source_item_id, number, subject, description,
 	role, want, why,
 	status, target_release, implementation_date, commit_sha, commit_tag, due_date,
-	origin, visibility, created_at, updated_at, tags`
+	origin, visibility, created_at, updated_at, tags, priority`
 
 const useCaseColumnsRead = useCaseColumns + `,
 	remote_id, sync_status, last_sync_at, last_sync_error,
 	claimed_by, claimed_at`
+
+// useCaseColumnsReadAliased is useCaseColumnsRead with every column prefixed
+// "u." for the JOIN in ListUseCaseItemsByScratchpad, which needs the alias to
+// disambiguate `id` against scratchpad_items.
+//
+// DERIVED, not hand-written. The hand-written copy drifted the moment a column
+// was added (priority, migration 0062): the SELECT still returned 27 columns
+// while scanUseCase wanted 28, and the endpoint 500'd with
+// "expected 27 destination arguments in Scan, not 28". A positional column list
+// duplicated in two places is the same defect this codebase has now hit five
+// times; the fix is to stop having two.
+var useCaseColumnsReadAliased = aliasColumns(useCaseColumnsRead, "u")
+
+// aliasColumns prefixes each comma-separated column with alias + ".".
+func aliasColumns(list, alias string) string {
+	parts := strings.Split(list, ",")
+	for i, c := range parts {
+		parts[i] = alias + "." + strings.TrimSpace(c)
+	}
+	return strings.Join(parts, ", ")
+}
 
 func scanUseCase(scan func(...any) error) (*domain.UseCaseItem, error) {
 	u := &domain.UseCaseItem{}
@@ -49,7 +71,7 @@ func scanUseCase(scan func(...any) error) (*domain.UseCaseItem, error) {
 		&u.ID, &u.ProjectID, &u.CreatorID, &sourceID, &u.Number, &u.Subject, &u.Description,
 		&u.Role, &u.Want, &u.Why,
 		&u.Status, &u.TargetRelease, &implDate, &u.CommitSHA, &u.CommitTag, &dueDate,
-		&u.Origin, &u.Visibility, &createdAt, &updatedAt, &tagsRaw,
+		&u.Origin, &u.Visibility, &createdAt, &updatedAt, &tagsRaw, &u.Priority,
 		&u.RemoteID, &u.SyncStatus, &lastSyncAt, &u.LastSyncError,
 		&u.ClaimedBy, &claimedAt,
 	)
@@ -80,6 +102,12 @@ func (s *Store) CreateUseCaseItem(ctx context.Context, u *domain.UseCaseItem) er
 	if status == "" {
 		status = "open"
 	}
+	// Empty means "unset" to callers; the column is NOT NULL with a 'none'
+	// default and a CHECK, so normalise here rather than let the insert fail.
+	priority := u.Priority
+	if priority == "" {
+		priority = "none"
+	}
 	if u.Number == 0 {
 		if err := s.DB.QueryRowContext(ctx,
 			`SELECT COALESCE(MAX(number)+1, 1) FROM use_case_items WHERE project_id = ?`,
@@ -90,11 +118,11 @@ func (s *Store) CreateUseCaseItem(ctx context.Context, u *domain.UseCaseItem) er
 	}
 	_, err := s.DB.ExecContext(ctx,
 		`INSERT INTO use_case_items (`+useCaseColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		u.ID, u.ProjectID, creator, nullString(u.SourceItemID), u.Number, u.Subject, u.Description,
 		u.Role, u.Want, u.Why,
 		status, u.TargetRelease, nullTimePtr(u.ImplementationDate), u.CommitSHA, u.CommitTag, nullTimePtr(u.DueDate),
-		u.Origin, vis, u.CreatedAt, u.UpdatedAt, marshalTags(u.Tags),
+		u.Origin, vis, u.CreatedAt, u.UpdatedAt, marshalTags(u.Tags), priority,
 	)
 	if err != nil {
 		return err
@@ -172,12 +200,7 @@ func (s *Store) enrichUseCaseSourceNames(ctx context.Context, items []*domain.Us
 // created use cases (no source_item_id) and orphaned ones are excluded.
 func (s *Store) ListUseCaseItemsByScratchpad(ctx context.Context, scratchpadID string) ([]*domain.UseCaseItem, error) {
 	rows, err := s.DB.QueryContext(ctx,
-		`SELECT u.id, u.project_id, u.creator_id, u.source_item_id, u.number, u.subject, u.description,
-		        u.role, u.want, u.why,
-		        u.status, u.target_release, u.implementation_date, u.commit_sha, u.commit_tag, u.due_date,
-		        u.origin, u.visibility, u.created_at, u.updated_at, u.tags,
-		        u.remote_id, u.sync_status, u.last_sync_at, u.last_sync_error,
-		        u.claimed_by, u.claimed_at
+		`SELECT `+useCaseColumnsReadAliased+`
 		 FROM use_case_items u
 		 JOIN scratchpad_items si ON u.source_item_id = si.id
 		 WHERE si.scratchpad_id = ?
@@ -208,18 +231,24 @@ func (s *Store) UpdateUseCaseItem(ctx context.Context, u *domain.UseCaseItem) er
 	// creation. Number is the per-project sequence and must stay stable so
 	// external references (UC-12 in a commit message, MCP push to Linear, etc.)
 	// keep resolving.
+	priority := u.Priority
+	if priority == "" {
+		priority = "none"
+	}
 	res, err := s.DB.ExecContext(ctx,
 		`UPDATE use_case_items SET
 			source_item_id = ?, subject = ?, description = ?,
 			role = ?, want = ?, why = ?,
 			status = ?, target_release = ?, implementation_date = ?,
 			commit_sha = ?, commit_tag = ?, due_date = ?, origin = ?, visibility = ?, updated_at = ?, tags = ?,
+			priority = ?,
 			claimed_by = ?, claimed_at = ?
 		 WHERE id = ?`,
 		nullString(u.SourceItemID), u.Subject, u.Description,
 		u.Role, u.Want, u.Why,
 		u.Status, u.TargetRelease, nullTimePtr(u.ImplementationDate),
 		u.CommitSHA, u.CommitTag, nullTimePtr(u.DueDate), u.Origin, u.Visibility, u.UpdatedAt, marshalTags(u.Tags),
+		priority,
 		u.ClaimedBy, nullTimePtr(u.ClaimedAt),
 		u.ID,
 	)
@@ -265,10 +294,21 @@ func (s *Store) ClaimUseCaseItem(ctx context.Context, id, claimedBy string) erro
 }
 
 func (s *Store) DeleteUseCaseItem(ctx context.Context, id string) error {
-	if err := s.DeleteCodeAnchorsForOwner(ctx, "use_case_item", id); err != nil {
-		return err
+	// One transaction: the anchor cascade and the parent delete must stand or
+	// fall together. Un-transacted, a losing concurrent delete committed the
+	// anchor removal and THEN returned ErrNotFound — leaving a live use case whose
+	// Throughline provenance was gone, behind an error that reads as "nothing
+	// happened" (audit M24; same shape as DeleteScratchpadItem).
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("delete use_case: begin: %w", err)
 	}
-	res, err := s.DB.ExecContext(ctx, `DELETE FROM use_case_items WHERE id = ?`, id)
+	defer func() { _ = tx.Rollback() }()
+
+	if err := deleteCodeAnchorsForOwnerTx(ctx, tx, "use_case_item", id); err != nil {
+		return fmt.Errorf("delete use_case anchors: %w", err)
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM use_case_items WHERE id = ?`, id)
 	if err != nil {
 		return err
 	}
@@ -276,5 +316,5 @@ func (s *Store) DeleteUseCaseItem(ctx context.Context, id string) error {
 	if n == 0 {
 		return fmt.Errorf("use_case %s: %w", id, storage.ErrNotFound)
 	}
-	return nil
+	return tx.Commit()
 }

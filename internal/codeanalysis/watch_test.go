@@ -32,7 +32,9 @@ type fakeWatchStore struct {
 	upserts  int
 }
 
-func (f *fakeWatchStore) ListProjects(context.Context) ([]*domain.Project, error) { return f.projects, nil }
+func (f *fakeWatchStore) ListProjects(context.Context) ([]*domain.Project, error) {
+	return f.projects, nil
+}
 func (f *fakeWatchStore) GetProjectSetting(_ context.Context, pid, key string) (*domain.ProjectSetting, error) {
 	if key == WatchDirSettingKey {
 		if d, ok := f.dirs[pid]; ok {

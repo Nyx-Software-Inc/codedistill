@@ -109,7 +109,7 @@ func (s *Server) createKB(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: time.Now().UTC(),
 	}
 	if err := s.store.CreateKnowledgeEntry(r.Context(), k); err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
+		writeErr(w, statusFor(err), err)
 		return
 	}
 	s.notifyExport(r.Context(), "knowledge_entry", k.ID, mcpworker.OpCreate, k)

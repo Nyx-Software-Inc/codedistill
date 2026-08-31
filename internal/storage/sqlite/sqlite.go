@@ -24,6 +24,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"codedistill/internal/storage/dbx"
 
@@ -51,7 +52,7 @@ type Store struct {
 // Open opens (or creates) the SQLite database at dsn.
 // dsn is a filesystem path; use ":memory:" for an in-memory db in tests.
 func Open(dsn string) (_ *Store, err error) {
-	db, oerr := sql.Open("sqlite", dsn)
+	db, oerr := sql.Open("sqlite", connString(dsn))
 	if oerr != nil {
 		return nil, fmt.Errorf("sqlite open: %w", oerr)
 	}
@@ -84,6 +85,35 @@ func Open(dsn string) (_ *Store, err error) {
 	return &Store{DB: dbx.New(db, dbx.SQLite), path: dsn}, nil
 }
 
+// busyTimeout is how long a connection waits for SQLite's write lock before
+// giving up with SQLITE_BUSY. Nothing configured one before, and
+// modernc.org/sqlite supplies no default, so a process that lost a race failed
+// INSTANTLY rather than waiting — which is what turned a routine upgrade
+// collision into a hard startup failure (CE-review item 15). Ten seconds
+// comfortably covers applying one migration; the pre-migration VACUUM INTO of a
+// large database is deliberately kept outside any lock hold so it can't eat this
+// budget (see backupBeforeMigrate).
+const busyTimeout = 10 * time.Second
+
+// connString returns the driver DSN for a database path: the path itself plus
+// the pragmas every connection needs.
+//
+// This is deliberately separate from Store.path, which must stay a plain
+// FILESYSTEM path — backupBeforeMigrate and Backup derive snapshot filenames
+// from it, so query parameters leaking in there would produce paths like
+// "codedistill.db?_pragma=...premigrate-0061.bak".
+//
+// The driver splits a non-"file:" DSN at the first '?', opens the left side as
+// the filename, and applies _pragma from the right (modernc.org/sqlite
+// conn.go:43-79), so this works on a bare path and on ":memory:" alike.
+func connString(dsn string) string {
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+	}
+	return fmt.Sprintf("%s%s_pragma=busy_timeout(%d)", dsn, sep, busyTimeout.Milliseconds())
+}
+
 // OpenDSN dispatches by scheme: a postgres:// or postgresql:// URL opens the
 // Postgres backend; anything else (a file path, ":memory:", "sqlite:…") opens
 // SQLite. This is the single entry point callers use to pick a backend.
@@ -106,13 +136,8 @@ func (s *Store) Migrate(ctx context.Context) error {
 		fsys, dir = pgMigrations()
 	}
 
-	if _, err := s.DB.ExecContext(ctx, `
-		CREATE TABLE IF NOT EXISTS schema_migrations (
-			version    TEXT PRIMARY KEY,
-			applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-		)
-	`); err != nil {
-		return fmt.Errorf("create schema_migrations: %w", err)
+	if err := s.ensureMigrationsTable(ctx); err != nil {
+		return err
 	}
 
 	entries, err := fs.ReadDir(fsys, dir)
@@ -143,6 +168,10 @@ func (s *Store) Migrate(ctx context.Context) error {
 	}
 
 	for _, name := range names {
+		// Cheap unlocked pre-check. On an already-migrated database this is the
+		// only thing that runs, so the steady-state path never pays for a write
+		// lock. It is NOT sufficient on its own — applyMigration re-checks under
+		// the lock, which is what makes the decision safe.
 		var count int
 		if err := s.DB.QueryRowContext(ctx,
 			`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, name,
@@ -158,23 +187,178 @@ func (s *Store) Migrate(ctx context.Context) error {
 			return fmt.Errorf("read %s: %w", name, err)
 		}
 
+		if err := s.applyMigration(ctx, name, string(data)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ensureMigrationsTable creates schema_migrations if absent, under the same lock
+// the migrations themselves take.
+//
+// CREATE TABLE IF NOT EXISTS looks like it needs no protection. It does: on
+// Postgres it is explicitly NOT concurrency-safe — two sessions running it
+// together race inserting the type row and the loser gets
+// "duplicate key value violates unique constraint pg_type_typname_nsp_index".
+// That fires at the very top of Migrate, before any per-migration locking, so
+// serializing the migrations alone left 7 of 8 concurrent starts still failing.
+// Only testing against a real Postgres surfaced this; SQLite serializes the same
+// statement happily once busy_timeout is set (CE-review item 15).
+func (s *Store) ensureMigrationsTable(ctx context.Context) error {
+	const ddl = `
+		CREATE TABLE IF NOT EXISTS schema_migrations (
+			version    TEXT PRIMARY KEY,
+			applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)
+	`
+	if s.DB.Dialect() == dbx.Postgres {
 		tx, err := s.DB.BeginTx(ctx, nil)
 		if err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, string(data)); err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("apply %s: %w", name, err)
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(?)`, migrationLockKey); err != nil {
+			return fmt.Errorf("lock for schema_migrations: %w", err)
 		}
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO schema_migrations (version) VALUES (?)`, name,
-		); err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("record %s: %w", name, err)
+		if _, err := tx.ExecContext(ctx, ddl); err != nil {
+			return fmt.Errorf("create schema_migrations: %w", err)
 		}
 		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit %s: %w", name, err)
+			return fmt.Errorf("create schema_migrations: %w", err)
 		}
+		return nil
+	}
+
+	conn, err := s.DB.Raw().Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire connection for schema_migrations: %w", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return fmt.Errorf("begin schema_migrations: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.WithoutCancel(ctx), `ROLLBACK`)
+		}
+	}()
+	if _, err := conn.ExecContext(ctx, ddl); err != nil {
+		return fmt.Errorf("create schema_migrations: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return fmt.Errorf("create schema_migrations: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+// applyMigration applies one migration under a write lock taken BEFORE the
+// "has it been applied?" question is asked.
+//
+// The old code read schema_migrations outside the transaction that applied the
+// migration, so two processes upgrading the same database could both read
+// "not applied" and both proceed. The loser then hit a bare CREATE TABLE
+// ("table … already exists"), a schema_migrations UNIQUE violation, or
+// SQLITE_BUSY — none of which say "another process is migrating", and all of
+// which read as corruption to a user who upgraded a minute ago.
+//
+// The re-check INSIDE the lock is the fix: the loser blocks, wakes once the
+// winner commits, sees the migration recorded, and skips it.
+func (s *Store) applyMigration(ctx context.Context, name, script string) error {
+	if s.DB.Dialect() == dbx.Postgres {
+		return s.applyMigrationPostgres(ctx, name, script)
+	}
+	return s.applyMigrationSQLite(ctx, name, script)
+}
+
+// migrationLockKey namespaces the Postgres advisory lock. Arbitrary but stable —
+// every CodeDistill process must pick the same number for the lock to serialize
+// anything.
+const migrationLockKey int64 = 0x0C0DED15
+
+func (s *Store) applyMigrationSQLite(ctx context.Context, name, script string) error {
+	// A dedicated connection: BEGIN IMMEDIATE / COMMIT are connection state, and
+	// database/sql gives no guarantee that two Exec calls land on the same
+	// connection.
+	conn, err := s.DB.Raw().Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire connection for %s: %w", name, err)
+	}
+	defer conn.Close()
+
+	// IMMEDIATE takes the write lock up front instead of deferring it to the
+	// first write, which is precisely the gap this bug lived in. A concurrent
+	// migrator blocks here for busyTimeout rather than failing instantly.
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return fmt.Errorf("begin %s: %w", name, err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			// Best effort, and deliberately not ctx-bound: a cancelled context
+			// must still release the write lock.
+			_, _ = conn.ExecContext(context.WithoutCancel(ctx), `ROLLBACK`)
+		}
+	}()
+
+	var count int
+	if err := conn.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, name).Scan(&count); err != nil {
+		return fmt.Errorf("re-check %s: %w", name, err)
+	}
+	if count > 0 {
+		return nil // another process applied it while we waited for the lock
+	}
+
+	if _, err := conn.ExecContext(ctx, script); err != nil {
+		return fmt.Errorf("apply %s: %w", name, err)
+	}
+	if _, err := conn.ExecContext(ctx,
+		`INSERT INTO schema_migrations (version) VALUES (?)`, name); err != nil {
+		return fmt.Errorf("record %s: %w", name, err)
+	}
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return fmt.Errorf("commit %s: %w", name, err)
+	}
+	committed = true
+	return nil
+}
+
+func (s *Store) applyMigrationPostgres(ctx context.Context, name, script string) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }() // no-op once committed
+
+	// Postgres has no BEGIN IMMEDIATE; a transaction-scoped advisory lock is the
+	// equivalent, and releases automatically on commit or rollback. This matters
+	// more here than on SQLite: Postgres is the multi-user server tier, where
+	// two instances starting at once is likelier, not rarer.
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(?)`, migrationLockKey); err != nil {
+		return fmt.Errorf("lock for %s: %w", name, err)
+	}
+
+	var count int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, name).Scan(&count); err != nil {
+		return fmt.Errorf("re-check %s: %w", name, err)
+	}
+	if count > 0 {
+		return nil
+	}
+
+	if _, err := tx.ExecContext(ctx, script); err != nil {
+		return fmt.Errorf("apply %s: %w", name, err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO schema_migrations (version) VALUES (?)`, name); err != nil {
+		return fmt.Errorf("record %s: %w", name, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit %s: %w", name, err)
 	}
 	return nil
 }
@@ -251,6 +435,18 @@ func (s *Store) backupBeforeMigrate(ctx context.Context, targetVersion string) e
 		return nil // snapshot already exists (a prior attempt) — keep it
 	}
 	if _, err := s.DB.ExecContext(ctx, `VACUUM INTO ?`, backupPath); err != nil {
+		// Two processes upgrading together both Stat, both see nothing, and both
+		// vacuum. VACUUM INTO refuses an existing output file, and the copy is
+		// slow (it duplicates the whole database), so this had the widest window
+		// of any part of the race — and it fired BEFORE any DDL.
+		//
+		// A snapshot another process already wrote is a success: the safety net
+		// this function exists to provide is in place either way. That is the
+		// same judgement the Stat check above already makes; this just also
+		// applies it when the winner finished mid-vacuum instead of before it.
+		if _, statErr := os.Stat(backupPath); statErr == nil {
+			return nil
+		}
 		return fmt.Errorf("vacuum into %s: %w", backupPath, err)
 	}
 	return nil

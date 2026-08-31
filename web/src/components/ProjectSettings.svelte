@@ -205,11 +205,12 @@
     saveMsg = '';
     loadFailed = false;
     try {
-      // Get-or-default for both keys. The settings GET returns 404
-      // when the key isn't set; we catch that and fall back.
+      // Get-or-default for both keys. The settings GET returns 204 No Content
+      // when the key isn't set, so `r` is undefined and the local default
+      // stands (CE-review item 43 — it used to 404 and spam the console).
       try {
         const r = await api.getProjectSetting(project.id, KEY_MAX);
-        const v = r.value;
+        const v = r?.value;
         if (typeof v === 'number' && v > 0) {
           maxMiB = Math.round(v / 1024 / 1024);
           maxOverridden = true;
@@ -220,7 +221,7 @@
       }
       try {
         const r = await api.getProjectSetting(project.id, KEY_MIMES);
-        const v = r.value;
+        const v = r?.value;
         if (Array.isArray(v) && v.every((x) => typeof x === 'string')) {
           mimesText = v.join('\n');
           mimesOverridden = true;
@@ -233,7 +234,7 @@
       for (const f of VERIFY_FIELDS) {
         try {
           const r = await api.getProjectSetting(project.id, f.key);
-          cmds[f.key] = typeof r.value === 'string' ? r.value : '';
+          cmds[f.key] = typeof r?.value === 'string' ? r?.value : '';
         } catch (e) { unset(e);
           cmds[f.key] = '';
         }
@@ -246,13 +247,13 @@
       }
       try {
         const r = await api.getProjectSetting(project.id, KEY_AI_REVIEW);
-        aiReview = r.value === true;
+        aiReview = r?.value === true;
       } catch (e) { unset(e);
         aiReview = false;
       }
       try {
         const r = await api.getProjectSetting(project.id, KEY_REVIEWER_MODEL);
-        reviewerModel = typeof r.value === 'string' ? r.value : '';
+        reviewerModel = typeof r?.value === 'string' ? r?.value : '';
       } catch (e) { unset(e);
         reviewerModel = '';
       }
@@ -263,63 +264,63 @@
       }
       try {
         const r = await api.getProjectSetting(project.id, KEY_MODEL_CLASSIFIER);
-        classifierModel = typeof r.value === 'string' ? r.value : '';
+        classifierModel = typeof r?.value === 'string' ? r?.value : '';
       } catch (e) { unset(e);
         classifierModel = '';
       }
       try {
         const r = await api.getProjectSetting(project.id, KEY_MODEL_CRITERIA);
-        criteriaModel = typeof r.value === 'string' ? r.value : '';
+        criteriaModel = typeof r?.value === 'string' ? r?.value : '';
       } catch (e) { unset(e);
         criteriaModel = '';
       }
       try {
         const r = await api.getProjectSetting(project.id, KEY_ZONES);
-        zonesText = Array.isArray(r.value) ? (r.value as string[]).join('\n') : '';
+        zonesText = Array.isArray(r?.value) ? (r?.value as string[]).join('\n') : '';
       } catch (e) { unset(e);
         zonesText = '';
       }
       try {
         const r = await api.getProjectSetting(project.id, KEY_TIGHTEN);
-        tightenTo = typeof r.value === 'string' ? r.value : '';
+        tightenTo = typeof r?.value === 'string' ? r?.value : '';
       } catch (e) { unset(e);
         tightenTo = '';
       }
       try {
         const r = await api.getProjectSetting(project.id, KEY_INDEX_EXCLUDE);
-        excludeText = Array.isArray(r.value) ? (r.value as string[]).join('\n') : '';
+        excludeText = Array.isArray(r?.value) ? (r?.value as string[]).join('\n') : '';
       } catch (e) { unset(e);
         excludeText = '';
       }
       try {
         const r = await api.getProjectSetting(project.id, KEY_INDEX_IGNORE_BUILTIN);
-        ignoreBuiltin = r.value === true;
+        ignoreBuiltin = r?.value === true;
       } catch (e) { unset(e);
         ignoreBuiltin = false;
       }
       try {
         const r = await api.getProjectSetting(project.id, KEY_DELETE_ACTION);
-        if (r.value === 'delete' || r.value === 'archive' || r.value === 'prompt') deleteAction = r.value;
+        if (r?.value === 'delete' || r?.value === 'archive' || r?.value === 'prompt') deleteAction = r?.value;
       } catch (e) { unset(e);
         deleteAction = 'prompt';
       }
       try {
         const r = await api.getProjectSetting(project.id, KEY_DEDUP_THRESHOLD);
-        if (typeof r.value === 'number') dedupThreshold = r.value;
+        if (typeof r?.value === 'number') dedupThreshold = r?.value;
       } catch (e) { unset(e);
         dedupThreshold = 0.73;
       }
       try {
         const r = await api.getProjectSetting(project.id, KEY_WATCH_DIR);
-        if (typeof r.value === 'string') watchDir = r.value;
+        if (typeof r?.value === 'string') watchDir = r?.value;
       } catch (e) { unset(e); watchDir = ''; }
       try {
         const r = await api.getProjectSetting(project.id, KEY_ROUTE_TARGET);
-        if (typeof r.value === 'string') routeTarget = r.value;
+        if (typeof r?.value === 'string') routeTarget = r?.value;
       } catch (e) { unset(e); routeTarget = ''; }
       try {
         const r = await api.getProjectSetting(project.id, KEY_ROUTE_MINSEV);
-        if (r.value === 'high' || r.value === 'medium' || r.value === 'low') routeMinSev = r.value;
+        if (r?.value === 'high' || r?.value === 'medium' || r?.value === 'low') routeMinSev = r?.value;
       } catch (e) { unset(e); routeMinSev = 'high'; }
       try {
         const g = await api.getGovernance(project.id);

@@ -125,10 +125,10 @@ func (a *Agent) autoDraftCriteria(ctx context.Context, projectID, category, owne
 		return
 	}
 	in := CriteriaInput{
-		Category:  category,
-		Subject:   firstLineOrTruncate(detail, 250),
-		Detail:    detail,
-		Role:      result.Role, Want: result.Want, Why: result.Why,
+		Category: category,
+		Subject:  firstLineOrTruncate(detail, 250),
+		Detail:   detail,
+		Role:     result.Role, Want: result.Want, Why: result.Why,
 		ProjectID: projectID,
 	}
 	texts, err := a.criteria.Draft(ctx, in)

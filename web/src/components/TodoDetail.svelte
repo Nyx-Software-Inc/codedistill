@@ -30,6 +30,7 @@
   import ClaimDialog from './ClaimDialog.svelte';
   import SyncIndicator from './SyncIndicator.svelte';
   import type { TodoItem, Priority, TodoStatus } from '../lib/types';
+  import { PRIORITIES } from '../lib/types';
   import { isTodoDone, isTodoInProgress } from '../lib/lifecycle';
 
   type Props = {
@@ -69,7 +70,6 @@
     activeTab = 'todo';
   });
 
-  const PRIORITIES: Priority[] = ['high', 'medium', 'low', 'none'];
   const STATUSES: TodoStatus[] = ['incomplete', 'in_progress', 'complete', 'abandoned'];
 
   let claiming = $state(false);

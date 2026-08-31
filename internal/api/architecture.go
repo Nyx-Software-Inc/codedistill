@@ -750,7 +750,7 @@ func (s *Server) updateArchNode(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) deleteArchNode(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.DeleteArchitectureNode(r.Context(), r.PathValue("id")); err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
+		writeErr(w, statusFor(err), err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

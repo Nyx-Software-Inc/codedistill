@@ -225,7 +225,7 @@ func (s *Server) createCodeAnchorForOwner(ownerType string) http.HandlerFunc {
 			UpdatedAt:  now,
 		}
 		if err := s.store.CreateCodeAnchor(r.Context(), anchor); err != nil {
-			writeErr(w, http.StatusInternalServerError, err)
+			writeErr(w, statusFor(err), err)
 			return
 		}
 		// Log WHEN a code location was linked — the Log owns the timeline,

@@ -144,3 +144,62 @@ func TestReset_RefusesNonLocalWorkspace(t *testing.T) {
 		t.Errorf("DB should still exist after refusal: %v", err)
 	}
 }
+
+// A Postgres DSN must be refused by the destructive commands, not silently
+// treated as a file path.
+//
+// reset and restore used to receive the raw -db value rather than the effective
+// database (dbArg = -database / $DATABASE_URL / -db), which every other command
+// threads. On a Postgres install -db still held the literal default
+// "codedistill.db", so `reset -force` deleted whatever SQLite file happened to
+// be in the working directory — main file plus -journal/-wal/-shm — printed
+// "reset: removed codedistill.db", exited 0, and left Postgres untouched.
+//
+// Two failure shapes, both bad: the operator believes the database was wiped
+// when it was not, or a stray single-user install is destroyed unrecoverably.
+// The existing multi-workspace guard does not help — it inspects the local
+// SQLite file, which has exactly one 'local' workspace, so it passes.
+//
+// cmdBackup already refused correctly, which is what made this dangerous: the
+// sibling teaches the user that the tool understands the distinction (CE-review
+// item 14).
+func TestDestructiveCommands_RefusePostgresDSN(t *testing.T) {
+	for _, dsn := range []string{
+		"postgres://u:p@dbhost:5432/codedistill",
+		"postgresql://u:p@dbhost:5432/codedistill?sslmode=require",
+	} {
+		if _, err := cmdReset(dsn); err == nil {
+			t.Errorf("cmdReset(%q) returned nil; a DSN must be refused, not treated as a path", dsn)
+		} else if !strings.Contains(err.Error(), "SQLite-only") {
+			t.Errorf("cmdReset(%q) error = %v; want the SQLite-only refusal", dsn, err)
+		}
+		if err := cmdRestore(dsn, "some-backup.db", true); err == nil {
+			t.Errorf("cmdRestore(%q) returned nil; a DSN must be refused", dsn)
+		}
+	}
+}
+
+// The refusal must not cost a real file path its normal behaviour.
+func TestReset_StillDeletesARealPath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "codedistill.db")
+	store, err := sqlite.OpenDSN(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	removed, err := cmdReset(path)
+	if err != nil {
+		t.Fatalf("reset on a real single-user db: %v", err)
+	}
+	if !removed {
+		t.Error("removed=false; want true")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("database still present after reset: %v", err)
+	}
+}

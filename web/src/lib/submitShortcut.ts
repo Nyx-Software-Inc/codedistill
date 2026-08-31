@@ -65,11 +65,12 @@ export function loadSubmitShortcut(): Promise<SubmitShortcut> {
   _loadPromise = (async () => {
     try {
       const r = await getUserSetting(LOCAL_USER, KEY);
-      if (r.value === 'enter' || r.value === 'ctrl-enter') {
+      // undefined = 204, never set — leave _shortcut at its default.
+      if (r && (r.value === 'enter' || r.value === 'ctrl-enter')) {
         _shortcut = r.value;
       }
     } catch {
-      // 404 on first run — leave default in place.
+      // Transport failure — leave the default in place.
     }
     return _shortcut;
   })();

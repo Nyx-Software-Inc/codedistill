@@ -267,10 +267,21 @@ func (s *Store) ClaimTodoItem(ctx context.Context, id, claimedBy string) error {
 }
 
 func (s *Store) DeleteTodoItem(ctx context.Context, id string) error {
-	if err := s.DeleteCodeAnchorsForOwner(ctx, "todo_item", id); err != nil {
-		return err
+	// One transaction: the anchor cascade and the parent delete must stand or
+	// fall together. Un-transacted, a losing concurrent delete committed the
+	// anchor removal and THEN returned ErrNotFound — leaving a live todo whose
+	// Throughline provenance was gone, behind an error that reads as "nothing
+	// happened" (audit M24; same shape as DeleteScratchpadItem).
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("delete todo: begin: %w", err)
 	}
-	res, err := s.DB.ExecContext(ctx, `DELETE FROM todo_items WHERE id = ?`, id)
+	defer func() { _ = tx.Rollback() }()
+
+	if err := deleteCodeAnchorsForOwnerTx(ctx, tx, "todo_item", id); err != nil {
+		return fmt.Errorf("delete todo anchors: %w", err)
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM todo_items WHERE id = ?`, id)
 	if err != nil {
 		return err
 	}
@@ -278,5 +289,5 @@ func (s *Store) DeleteTodoItem(ctx context.Context, id string) error {
 	if n == 0 {
 		return fmt.Errorf("todo %s: %w", id, storage.ErrNotFound)
 	}
-	return nil
+	return tx.Commit()
 }

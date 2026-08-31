@@ -36,6 +36,9 @@ BIN="$REPO_ROOT/codedistill"
 SPEC="$REPO_ROOT/packaging/rpm/codedistill.spec"
 SERVICE="$REPO_ROOT/packaging/rpm/codedistill.service"
 PROFILE="$REPO_ROOT/packaging/profile.d/codedistill.sh"
+# Edition-neutral Ollama provisioning (RAM-sized model). Shared with the
+# server package; lives in packaging/ so the CE mirror keeps it.
+PROVISION_OLLAMA="$REPO_ROOT/packaging/provision-ollama.sh"
 
 if [ ! -x "$BIN" ]; then
   echo "==> codedistill binary missing at $BIN — running build.sh first"
@@ -57,6 +60,9 @@ mkdir -p "$STAGE"
 install -m 0755 "$BIN" "$STAGE/codedistill"
 install -m 0644 "$SERVICE" "$STAGE/codedistill.service"
 install -m 0644 "$PROFILE" "$STAGE/codedistill-profile.sh"
+# %license in the spec needs the text in the source dir (CE-review item 18).
+install -m 0644 "$REPO_ROOT/LICENSE" "$STAGE/LICENSE"
+install -m 0755 "$PROVISION_OLLAMA" "$STAGE/provision-ollama.sh"
 
 # README inside the RPM. Short pointer to the canonical docs +
 # the systemd activation incantation.

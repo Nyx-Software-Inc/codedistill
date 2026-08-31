@@ -152,7 +152,16 @@ export function flushDialogs() {
 /** DialogHost calls this to finish the front-of-queue request. The queue
  * removal is unconditional (finally) and keyed by id with a drop-the-front
  * fallback — whatever else goes wrong, a click always dismisses a dialog. */
-export function settleDialog(req: DialogRequest, value: unknown) {
+export function settleDialog(req: DialogRequest | null | undefined, value: unknown) {
+  // A caller with no request in hand still means "the user asked to close this".
+  // DialogHost reads its request from a $derived, and if the app's reactivity has
+  // stalled that derived goes null while the dialog is still on screen — the old
+  // signature threw here and left the user with an un-closable modal. Falling
+  // through to a flush keeps the promise in the caller's `await` resolving.
+  if (!req) {
+    flushDialogs();
+    return;
+  }
   try {
     (req.resolve as (v: unknown) => void)(value);
   } finally {

@@ -29,10 +29,10 @@ import (
 // inlineShas covers the composite-doc inline blob refs that the
 // GCWatcher unions with the column-resident set.
 type stubLiveLister struct {
-	shas        []string
-	inlineShas  []string
-	err         error
-	inlineErr   error
+	shas       []string
+	inlineShas []string
+	err        error
+	inlineErr  error
 }
 
 func (s stubLiveLister) ListLiveBlobShas(context.Context) ([]string, error) {

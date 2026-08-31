@@ -148,11 +148,27 @@ func (s *Store) DeleteCodeAnchor(ctx context.Context, id string) error {
 }
 
 // DeleteCodeAnchorsForOwner removes every anchor bound to (ownerType, ownerID).
-// Called from the four owner-specific Delete* methods so cascade is enforced
-// without cross-type FKs. Not-found is not an error — an owner with no anchors
-// is a normal case.
+// Not-found is not an error — an owner with no anchors is a normal case.
+//
+// The four owner-specific Delete* methods do NOT call this: they need the same
+// statement inside their own transaction, so they call deleteCodeAnchorsForOwnerTx
+// directly. This exported form remains for any caller that wants the cascade on
+// its own.
 func (s *Store) DeleteCodeAnchorsForOwner(ctx context.Context, ownerType, ownerID string) error {
-	_, err := s.DB.ExecContext(ctx,
+	return deleteCodeAnchorsForOwnerTx(ctx, s.DB, ownerType, ownerID)
+}
+
+// execer is satisfied by both *sql.DB and *sql.Tx, so the cascade statement has
+// one home whether it runs standalone or inside an owner delete's transaction.
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// deleteCodeAnchorsForOwnerTx is the single definition of the owner→anchors
+// cascade. Kept in one place deliberately: the alternative was inlining the
+// same DELETE into each of the five callers, which is how the statement drifts.
+func deleteCodeAnchorsForOwnerTx(ctx context.Context, x execer, ownerType, ownerID string) error {
+	_, err := x.ExecContext(ctx,
 		`DELETE FROM code_anchors WHERE owner_type = ? AND owner_id = ?`,
 		ownerType, ownerID,
 	)
@@ -246,11 +262,11 @@ func (s *Store) ListCodeAnchorsByPath(ctx context.Context, projectID, path strin
 	out := []*domain.CodeAnchorWithOwner{}
 	for rows.Next() {
 		var (
-			a                                              domain.CodeAnchorWithOwner
-			codebaseID, anchorPath, revision, url, label  sql.NullString
-			lineStart, lineEnd                             sql.NullInt64
-			ownerScratchpad                                sql.NullString
-			ownerTitle                                     sql.NullString
+			a                                            domain.CodeAnchorWithOwner
+			codebaseID, anchorPath, revision, url, label sql.NullString
+			lineStart, lineEnd                           sql.NullInt64
+			ownerScratchpad                              sql.NullString
+			ownerTitle                                   sql.NullString
 		)
 		err := rows.Scan(
 			&a.ID, &a.OwnerType, &a.OwnerID, &a.Kind, &codebaseID, &anchorPath,

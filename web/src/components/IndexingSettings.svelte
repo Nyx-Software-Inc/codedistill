@@ -12,58 +12,40 @@
 ============================================================================= -->
 
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
-  import * as api from '../lib/api';
-  import {
-    loadUserBool, saveUserBool,
-    loadUserNum, saveUserNum,
-  } from '../lib/userSettings';
+  import { onMount } from 'svelte';
+  import { powerSource, batteryPause, loadBatteryPause, setBatteryPause } from '../lib/power';
+  import { loadUserNum, saveUserNum } from '../lib/userSettings';
 
   // Setting keys mirror codedistill/internal/throttle/throttle.go.
   // The "indexing" namespace is a historical name — the same keys
   // also drive the matcher watcher's cadence.
-  const KEY_PAUSE = 'indexing.battery.pause';
   const KEY_MULTIPLIER = 'indexing.battery.multiplier';
 
-  // Slider bounds + default mirror MinMultiplier / MaxMultiplier /
-  // DefaultMultiplier in throttle.go. Drift between this file and
-  // the Go side is invisible to users but would make the UI lie
-  // about what's effectively running — keep in sync.
+  // Slider BOUNDS still mirror MinMultiplier / MaxMultiplier in throttle.go —
+  // those are validation limits, not defaults, and the settings API does not
+  // serve them. The DEFAULT no longer lives here: the server returns
+  // throttle.DefaultMultiplier for an unset key, so the value below is only a
+  // last-resort fallback for a failed request (CE-review item 43).
   const MIN_MULTIPLIER = 1;
   const MAX_MULTIPLIER = 11;
-  const DEFAULT_MULTIPLIER = 5;
-  const DEFAULT_PAUSE = false;
+  const MULTIPLIER_FALLBACK = 5;
 
-  let pause = $state(DEFAULT_PAUSE);
-  let multiplier = $state(DEFAULT_MULTIPLIER);
-  let source = $state<api.PowerSource>('unknown');
+  let multiplier = $state(MULTIPLIER_FALLBACK);
   let loading = $state(true);
 
-  let pollTimer: ReturnType<typeof setInterval> | null = null;
+  // One shared poller for the power source (lib/power.ts) instead of this
+  // component running a second 10s interval alongside PowerBadge's.
+  let source = $derived($powerSource);
+  let pause = $derived($batteryPause ?? false);
 
   async function loadAll() {
-    pause = await loadUserBool(KEY_PAUSE, DEFAULT_PAUSE);
-    multiplier = await loadUserNum(KEY_MULTIPLIER, DEFAULT_MULTIPLIER);
+    await loadBatteryPause();
+    multiplier = await loadUserNum(KEY_MULTIPLIER, MULTIPLIER_FALLBACK);
     loading = false;
   }
 
-  async function refreshSource() {
-    try {
-      const r = await api.getPowerSource();
-      source = r.source;
-    } catch {
-      source = 'unknown';
-    }
-  }
-
   onMount(() => {
-    loadAll();
-    refreshSource();
-    pollTimer = setInterval(refreshSource, 10_000);
-  });
-
-  onDestroy(() => {
-    if (pollTimer) clearInterval(pollTimer);
+    void loadAll();
   });
 
   function clamp(n: number, min: number, max: number) {
@@ -71,9 +53,10 @@
     return Math.max(min, Math.min(max, Math.round(n)));
   }
 
+  // Pushes into the shared store first, so PowerBadge re-renders immediately
+  // rather than discovering the change on its next poll.
   function onPauseToggle(checked: boolean) {
-    pause = checked;
-    saveUserBool(KEY_PAUSE, pause);
+    setBatteryPause(checked);
   }
 
   function onMultiplierInput(raw: number) {

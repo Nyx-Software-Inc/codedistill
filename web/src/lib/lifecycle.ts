@@ -83,3 +83,23 @@ export function useCaseTerminalLabel(s: UseCaseStatus): string {
 export function knowledgeTerminalLabel(s: KnowledgeStatus): string {
   return s === 'deprecated' ? 'Deprecated' : '';
 }
+
+/** Kind-agnostic terminal check, for callers that hold a `kind` string from
+ *  derivedStatus rather than a typed item. Used by the list sort: a group ranks
+ *  by its most important OPEN member, so closed work must not decide where a
+ *  folder sits. */
+export function isDoneForKind(kind: string, status: string): boolean {
+  switch (kind) {
+    case 'todo':
+      return isTodoDone(status as TodoStatus);
+    case 'bug':
+      return isBugDone(status as BugStatus);
+    case 'use case':
+    case 'use_case':
+      return isUseCaseDone(status as UseCaseStatus);
+    case 'kb':
+      return isKnowledgeDone(status as KnowledgeStatus);
+    default:
+      return false;
+  }
+}

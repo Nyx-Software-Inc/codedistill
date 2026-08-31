@@ -15,7 +15,6 @@ package mcp
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"codedistill/internal/domain"
@@ -38,14 +37,10 @@ func (t *Tools) recordEvent(ctx context.Context, ownerType, ownerID, kind, summa
 // notes land here, not in a mutable blob field: the log is append-only and is
 // what the Log tab and the canvas pulse read.
 func (t *Tools) recordNote(ctx context.Context, ownerType, ownerID, body string) {
-	summary := body
-	if i := strings.IndexByte(summary, '\n'); i >= 0 {
-		summary = summary[:i]
-	}
-	summary = strings.TrimSpace(summary)
-	if len(summary) > 120 {
-		summary = summary[:120]
-	}
+	// One implementation shared with internal/api. This path used to omit the
+	// ellipsis the API added, so the same note previewed differently depending on
+	// whether a human or an agent recorded it (CE-review item 23).
+	summary := domain.NoteSummary(body)
 	_ = t.Store.RecordItemEvent(ctx, &domain.ItemEvent{
 		ID: id.New(), OwnerType: ownerType, OwnerID: ownerID,
 		Kind: "note", Summary: summary, Body: body, Source: "mcp", CreatedAt: time.Now().UTC(),

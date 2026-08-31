@@ -32,21 +32,21 @@ func TestLooksLikeBareURL(t *testing.T) {
 		{"http://example.com", true},
 		{"https://example.com/path?q=foo#frag", true},
 		{"  https://example.com  ", true}, // leading/trailing whitespace OK
-		{"\nhttps://example.com\n", true},  // newline whitespace OK
+		{"\nhttps://example.com\n", true}, // newline whitespace OK
 		{"https://example.com/a/b/c", true},
 
 		// Not bare URLs — keep as text.
 		{"", false},
 		{"hello world", false},
 		{"Check this out: https://example.com", false}, // surrounding prose
-		{"https://example.com is cool", false},          // trailing prose
-		{"https://a.com https://b.com", false},          // multiple URLs
-		{"https://a.com\nhttps://b.com", false},         // multi-line URLs
-		{"ftp://example.com", false},                    // unsupported scheme
-		{"file:///etc/passwd", false},                   // unsupported scheme
-		{"javascript:alert(1)", false},                  // unsupported scheme
-		{"example.com", false},                          // no scheme
-		{"//example.com", false},                        // scheme-relative
+		{"https://example.com is cool", false},         // trailing prose
+		{"https://a.com https://b.com", false},         // multiple URLs
+		{"https://a.com\nhttps://b.com", false},        // multi-line URLs
+		{"ftp://example.com", false},                   // unsupported scheme
+		{"file:///etc/passwd", false},                  // unsupported scheme
+		{"javascript:alert(1)", false},                 // unsupported scheme
+		{"example.com", false},                         // no scheme
+		{"//example.com", false},                       // scheme-relative
 	}
 	for _, c := range cases {
 		t.Run(c.in, func(t *testing.T) {
@@ -140,4 +140,3 @@ func TestCreateItemProseStaysText(t *testing.T) {
 		t.Errorf("content_type = %q, want text (URL with surrounding prose stays text)", item.ContentType)
 	}
 }
-

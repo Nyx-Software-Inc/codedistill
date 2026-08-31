@@ -128,8 +128,15 @@ func (s *Store) DeleteSkill(ctx context.Context, id string) error {
 	// The version history and any retrievals/applications are intentionally left
 	// in place — they are provenance about changes that already happened, and a
 	// deleted skill's past use should not silently disappear from the throughline.
-	if _, err := s.DB.ExecContext(ctx, `DELETE FROM skills WHERE id = ?`, id); err != nil {
+	res, err := s.DB.ExecContext(ctx, `DELETE FROM skills WHERE id = ?`, id)
+	if err != nil {
 		return fmt.Errorf("delete skill: %w", err)
+	}
+	// The other outlier alongside architecture nodes: without this a delete of a
+	// nonexistent skill reported success and the API answered 204 (CE-review
+	// item 31).
+	if c, _ := res.RowsAffected(); c == 0 {
+		return fmt.Errorf("skill %s: %w", id, storage.ErrNotFound)
 	}
 	return nil
 }

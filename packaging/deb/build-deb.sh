@@ -53,8 +53,39 @@ trap 'rm -rf "$PKG"' EXIT
 install -D -m 0755 "$BIN" "$PKG/opt/CodeDistill/bin/codedistill"
 install -D -m 0644 "$SERVICE" "$PKG/usr/lib/systemd/user/codedistill.service"
 install -D -m 0644 "$PROFILE" "$PKG/etc/profile.d/codedistill.sh"
+install -D -m 0755 "$REPO_ROOT/packaging/provision-ollama.sh" \
+  "$PKG/opt/CodeDistill/libexec/provision-ollama.sh"
 
 mkdir -p "$PKG/usr/share/doc/codedistill"
+# AGPL binaries must carry their terms. Debian has no control License:
+# field — the license belongs in the package's copyright file, and the full
+# text ships beside it (CE-review item 18).
+install -m 0644 "$REPO_ROOT/LICENSE" "$PKG/usr/share/doc/codedistill/LICENSE"
+cat > "$PKG/usr/share/doc/codedistill/copyright" <<'COPYRIGHT'
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: CodeDistill
+Source: https://github.com/Nyx-Software-Inc/codedistill
+
+Files: *
+Copyright: 2026 Nyx Software, Inc.
+License: AGPL-3.0-only or LicenseRef-Nyx-Commercial
+ CodeDistill is dual-licensed. You may use it under the GNU Affero General
+ Public License version 3 ONLY, or under a separate commercial license
+ available from Nyx Software, Inc.
+ .
+ This program is distributed in the hope that it will be useful, but WITHOUT
+ ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+ details.
+ .
+ The complete text of the GNU AGPL v3 is shipped alongside this file as
+ /usr/share/doc/codedistill/LICENSE, is available in
+ /usr/share/common-licenses/AGPL-3 on Debian systems, and online at
+ https://www.gnu.org/licenses/agpl-3.0.txt
+ .
+ Corresponding source for this binary is at https://github.com/Nyx-Software-Inc/codedistill
+COPYRIGHT
+
 cat > "$PKG/usr/share/doc/codedistill/README" <<'EOF'
 CodeDistill — local-first scratchpad capture funnel.
 
@@ -72,10 +103,17 @@ Run as a user-scope systemd service:
 
 Open the UI at http://127.0.0.1:8080
 
-Classification requires Ollama running on http://localhost:11434.
-Install Ollama (https://ollama.com) and pull a model:
-  ollama pull qwen2.5:7b
-  ollama pull nomic-embed-text
+Classification runs locally against Ollama on http://localhost:11434.
+Install-time provisioning already installed Ollama and pulled a model
+sized to this machine's RAM (<16GB -> qwen2.5:7b, >=16GB -> qwen2.5:14b)
+plus nomic-embed-text for embeddings.
+
+If the machine was offline at install time, re-run it any time — it is
+idempotent and resumes:
+  sudo /opt/CodeDistill/libexec/provision-ollama.sh
+
+To change the model: edit CODEDISTILL_MODEL in /etc/codedistill/codedistill.env,
+`ollama pull <model>`, then `systemctl --user restart codedistill`.
 
 Data lives under ~/.local/share/codedistill/ (DB + blobs).
 Reset everything with `codedistill reset -force`.
@@ -93,21 +131,36 @@ Priority: optional
 Architecture: amd64
 Installed-Size: ${SIZE_KB}
 Maintainer: CodeDistill <noreply@codedistill.dev>
-Homepage: https://github.com/codedistill/codedistill
+Homepage: https://codedistill.dev
 Description: Scratchpad to auto-classified todos, bugs, and knowledge
  CodeDistill turns the messy paste-everything scratchpad into a
  funnel of classified todos, bugs, and knowledge entries. Local-
- first single-binary install: bring your own Ollama for the LLM
- side; everything else is self-contained.
+ first single-binary install: Ollama and a RAM-sized model are
+ provisioned automatically at install time; everything else is
+ self-contained. Nothing leaves the machine.
  .
  This package installs the single-user desktop binary. For the
  multi-user hosted deployment, use the container image.
 EOF
 
 # No Depends: line — the binary is pure Go (modernc.org/sqlite is
-# in-process), so there are no shared-library deps to declare.
-# No postinst — the systemd USER unit is discovered lazily per user,
-# matching the RPM's empty %post.
+# in-process), so there are no shared-library deps to declare. Ollama is
+# NOT a Depends either: it isn't in Debian/Ubuntu archives, so postinst
+# provisions it directly, exactly as the RPM's %post does.
+
+# postinst: provision Ollama + a RAM-sized model. The systemd USER unit is
+# still discovered lazily per user, so there is nothing to enable here.
+# Non-fatal by design — the script warns and exits 0 offline, so a
+# provisioning hiccup never fails the install.
+cat > "$PKG/DEBIAN/postinst" <<'POSTINST'
+#!/bin/sh
+set -e
+if [ "$1" = "configure" ]; then
+  /opt/CodeDistill/libexec/provision-ollama.sh || \
+    echo "codedistill: Ollama setup incomplete — re-run /opt/CodeDistill/libexec/provision-ollama.sh"
+fi
+POSTINST
+chmod 0755 "$PKG/DEBIAN/postinst"
 
 # ── build ────────────────────────────────────────────────────────────
 mkdir -p "$REPO_ROOT/dist"

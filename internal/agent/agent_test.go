@@ -594,6 +594,8 @@ func TestAutoAnchorCreatesAnchorsForSuggestedFiles(t *testing.T) {
 		WithProjectFileTree(func(_ context.Context, _ string) ([]string, error) {
 			return tree, nil
 		}),
+		// Auto-anchoring is paid and now fails closed (CE-review item 28).
+		WithCodeAnchors(true),
 	)
 	fx.clf.category = "TODO"
 	fx.clf.suggestedFiles = []string{"internal/api/server.go", "web/src/App.svelte"}
@@ -644,6 +646,8 @@ func TestAutoAnchorDropsHallucinatedPaths(t *testing.T) {
 		WithProjectFileTree(func(_ context.Context, _ string) ([]string, error) {
 			return []string{"internal/api/server.go"}, nil
 		}),
+		// Auto-anchoring is paid and now fails closed (CE-review item 28).
+		WithCodeAnchors(true),
 	)
 	fx.clf.category = "BUG"
 	// Model returns one valid path + one hallucination.
@@ -666,7 +670,14 @@ func TestAutoAnchorDropsHallucinatedPaths(t *testing.T) {
 
 func TestAutoAnchorNoFileTreeIsNoOp(t *testing.T) {
 	fx := newFixture(t)
-	// Default fixture has no fileTree wired — degrades cleanly.
+	// Licensed, but no fileTree wired — degrades cleanly. WithCodeAnchors(true)
+	// matters: without it this test would pass because the paid gate is off
+	// rather than because the tree is empty, quietly ceasing to test its own
+	// claim (CE-review item 28).
+	fx.agent = New(fx.store, fx.clf,
+		WithClock(func() time.Time { return fx.nowT }),
+		WithCodeAnchors(true),
+	)
 	fx.clf.category = "TODO"
 	fx.clf.suggestedFiles = []string{"foo.go"} // model would return paths but we sent no tree
 	fx.seed(t, "full", "")

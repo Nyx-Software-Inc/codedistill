@@ -62,9 +62,11 @@ func TestUserSettingsAPI(t *testing.T) {
 		t.Errorf("list len = %d, want 2 (got %v)", len(all), all)
 	}
 
-	// DELETE.
+	// DELETE, then the key reads back as unset — 204 No Content, not 404.
+	// Asking for a setting that was never written (or has been removed) is not
+	// an error; the client supplies its own default (CE-review item 43).
 	doJSON(t, srv, "DELETE", "/api/v1/users/local/settings/ui.drawer.open", nil, 204, nil)
-	doJSON(t, srv, "GET", "/api/v1/users/local/settings/ui.drawer.open", nil, 404, nil)
+	doJSON(t, srv, "GET", "/api/v1/users/local/settings/ui.drawer.open", nil, 204, nil)
 }
 
 func TestProjectSettingsAPI(t *testing.T) {
@@ -103,9 +105,13 @@ func TestSettingsValidationErrors(t *testing.T) {
 	// Missing value field.
 	doJSON(t, srv, "PUT", "/api/v1/users/local/settings/k", map[string]any{}, 400, nil)
 
-	// GET a key that's never been set.
-	doJSON(t, srv, "GET", "/api/v1/users/local/settings/never.set", nil, 404, nil)
+	// GET a key that's never been set → 204 No Content.
+	doJSON(t, srv, "GET", "/api/v1/users/local/settings/never.set", nil, 204, nil)
 
-	// DELETE a missing key.
+	// DELETE a missing key → still 404, and the asymmetry is deliberate.
+	// "What is this value?" has a valid answer when nothing is stored ("there
+	// isn't one"). "Remove this" does not — it names something that does not
+	// exist, which is the same call made for architecture nodes and skills in
+	// CE-review item 31.
 	doJSON(t, srv, "DELETE", "/api/v1/users/local/settings/never.set", nil, 404, nil)
 }

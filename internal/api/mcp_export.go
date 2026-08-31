@@ -82,8 +82,8 @@ func (s *Server) discoverDestination(w http.ResponseWriter, r *http.Request) {
 // suggestMappingRequest is the body of POST /api/v1/mcp-export/
 // suggest-mapping.
 type suggestMappingRequest struct {
-	ItemType string             `json:"item_type"` // "todo" | "bug" | "kb" | "use_case"
-	Catalog  []mcpclient.Tool   `json:"catalog"`
+	ItemType string           `json:"item_type"` // "todo" | "bug" | "kb" | "use_case"
+	Catalog  []mcpclient.Tool `json:"catalog"`
 }
 
 type suggestMappingResponse struct {

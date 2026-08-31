@@ -46,9 +46,11 @@ type sarifRun struct {
 }
 
 type sarifRule struct {
-	ID                   string `json:"id"`
-	Name                 string `json:"name"`
-	ShortDescription     struct{ Text string `json:"text"` } `json:"shortDescription"`
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	ShortDescription struct {
+		Text string `json:"text"`
+	} `json:"shortDescription"`
 	DefaultConfiguration struct {
 		Level string `json:"level"`
 	} `json:"defaultConfiguration"`
@@ -61,10 +63,12 @@ type sarifProps struct {
 }
 
 type sarifResult struct {
-	RuleID              string            `json:"ruleId"`
-	RuleIndex           *int              `json:"ruleIndex"`
-	Level               string            `json:"level"`
-	Message             struct{ Text string `json:"text"` } `json:"message"`
+	RuleID    string `json:"ruleId"`
+	RuleIndex *int   `json:"ruleIndex"`
+	Level     string `json:"level"`
+	Message   struct {
+		Text string `json:"text"`
+	} `json:"message"`
 	Locations           []sarifLocation   `json:"locations"`
 	PartialFingerprints map[string]string `json:"partialFingerprints"`
 	Properties          sarifProps        `json:"properties"`
@@ -78,7 +82,9 @@ type sarifLocation struct {
 		Region struct {
 			StartLine int `json:"startLine"`
 			EndLine   int `json:"endLine"`
-			Snippet   struct{ Text string `json:"text"` } `json:"snippet"`
+			Snippet   struct {
+				Text string `json:"text"`
+			} `json:"snippet"`
 		} `json:"region"`
 	} `json:"physicalLocation"`
 }

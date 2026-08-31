@@ -39,13 +39,13 @@ func scanBug(scan func(...any) error) (*domain.BugItem, error) {
 	var (
 		sourceID                           sql.NullString
 		steps, expected, actual, env, comp sql.NullString
-		createdAt                                 flexTime
-		completedAt                               flexTime
-		commitSHA, commitTag                      sql.NullString
-		dueDate                                   flexTime
-		tagsRaw                                   string
-		lastSyncAt                                flexTime
-		claimedAt                                 flexTime
+		createdAt                          flexTime
+		completedAt                        flexTime
+		commitSHA, commitTag               sql.NullString
+		dueDate                            flexTime
+		tagsRaw                            string
+		lastSyncAt                         flexTime
+		claimedAt                          flexTime
 	)
 	err := scan(
 		&b.ID, &b.ProjectID, &b.CreatorID, &sourceID, &b.Number, &b.Subject,
@@ -265,10 +265,21 @@ func (s *Store) ClaimBugItem(ctx context.Context, id, claimedBy string) error {
 }
 
 func (s *Store) DeleteBugItem(ctx context.Context, id string) error {
-	if err := s.DeleteCodeAnchorsForOwner(ctx, "bug_item", id); err != nil {
-		return err
+	// One transaction: the anchor cascade and the parent delete must stand or
+	// fall together. Un-transacted, a losing concurrent delete committed the
+	// anchor removal and THEN returned ErrNotFound — leaving a live bug whose
+	// Throughline provenance was gone, behind an error that reads as "nothing
+	// happened" (audit M24; same shape as DeleteScratchpadItem).
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("delete bug: begin: %w", err)
 	}
-	res, err := s.DB.ExecContext(ctx, `DELETE FROM bug_items WHERE id = ?`, id)
+	defer func() { _ = tx.Rollback() }()
+
+	if err := deleteCodeAnchorsForOwnerTx(ctx, tx, "bug_item", id); err != nil {
+		return fmt.Errorf("delete bug anchors: %w", err)
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM bug_items WHERE id = ?`, id)
 	if err != nil {
 		return err
 	}
@@ -276,5 +287,5 @@ func (s *Store) DeleteBugItem(ctx context.Context, id string) error {
 	if n == 0 {
 		return fmt.Errorf("bug %s: %w", id, storage.ErrNotFound)
 	}
-	return nil
+	return tx.Commit()
 }

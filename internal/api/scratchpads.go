@@ -150,13 +150,13 @@ const gridWidth = 24
 // card chrome (title bar + padding). Estimates err small-and-resizable
 // rather than precise — the user can always nudge a card.
 const (
-	charsPerCol    = 9
-	linesPerRow    = 2
-	chromeRows     = 1
-	minNaturalW    = 4
-	minNaturalH    = 2
-	maxNaturalH    = 8  // beyond this, widen instead of growing taller
-	maxClampH      = 10 // absolute height cap even at full width
+	charsPerCol = 9
+	linesPerRow = 2
+	chromeRows  = 1
+	minNaturalW = 4
+	minNaturalH = 2
+	maxNaturalH = 8  // beyond this, widen instead of growing taller
+	maxClampH   = 10 // absolute height cap even at full width
 )
 
 // restackReq is the optional POST body for restack.
