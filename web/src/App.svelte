@@ -663,7 +663,16 @@
     }
     try {
       const r = await api.getUserSetting(LOCAL_USER, `${CODE_CANVAS_KEY_PREFIX}${pid}`);
-      if (!r) return; // 204 — no saved code-canvas state for this project yet
+      if (!r) {
+        // 204 — nothing saved for this project yet. That is not a failure, so
+        // clear the view AND clear the failed flag; leaving it latched would
+        // keep blocking saves.
+        codeTabs = [];
+        codeActiveIndex = 0;
+        codeVisible = false;
+        codeCanvasLoadFailed = false;
+        return;
+      }
       const v = r.value as { tabs?: CodeTab[]; activeIndex?: number; visible?: boolean } | null;
       const tabs = Array.isArray(v?.tabs)
         ? v.tabs.filter((t) => t && typeof t.path === 'string' && typeof t.revision === 'string')
@@ -1100,13 +1109,16 @@
       );
       try {
         const r = await api.getUserSetting(LOCAL_USER, ACTIVE_PROJECT_KEY);
-        if (!r) return; // 204 — no active project remembered yet
-        if (typeof r.value === 'string' && r.value) {
+        // undefined = 204, no active project remembered (every first run).
+        // Must NOT return here: loadProjects() below is what falls back to the
+        // first project, and skipping it leaves the app with no project, no
+        // data and no SSE channel.
+        if (r && typeof r.value === 'string' && r.value) {
           activeProjectId = r.value;
         }
       } catch {
-        // 404 on first run is expected; loadProjects below will fall back
-        // to the first project in the list.
+        // Transport failure; loadProjects below still falls back to the first
+        // project in the list.
       }
       await loadProjects();
       await Promise.all([refresh(), loadCodeCanvasState(activeProjectId)]);
