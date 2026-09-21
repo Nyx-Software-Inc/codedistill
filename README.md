@@ -29,6 +29,9 @@ drifting apart.
   AI drafts a starting set; you ratify.
 - **A code scan** that runs your installed analyzers and shows the findings, which you
   can push straight onto a scratchpad as work.
+- **Code anchors** — tie a work item to the exact file and lines that implement
+  it, so intent and code stay attached. Drop a file on an item, or set a range
+  by hand.
 - **Dashboards, code metrics, an architecture view and a data model view.**
 - **MCP reads**, so Claude Code, Cursor or your own agent can see your work items.
 - **Local and private.** Classification runs against your own
@@ -37,14 +40,19 @@ drifting apart.
 
 ## Quick start
 
-Requires Go 1.25+ and a running Ollama with `qwen2.5:7b` and `nomic-embed-text` pulled.
-(Node 20+ only if you rebuild the UI.)
+Linux or macOS, and Go 1.25+. On Windows use WSL — the scripts need bash. (Node
+20+ only if you change the UI.)
 
-    ./build.sh          # builds ./codedistill (Community Edition)
-    ./codedistill serve # UI on http://localhost:8080
+    ./build.sh             # builds ./codedistill
+    ./scripts/install.sh   # Ollama + models + database
+    ./codedistill serve    # UI on http://localhost:8080
 
-The Linux packages install Ollama and pull a model sized to your machine automatically.
-Installing by hand? `scripts/install.sh` does the same thing.
+The middle step is the one that saves you the setup: it finds or installs
+[Ollama](https://ollama.com), pulls the two models CodeDistill runs on —
+`qwen2.5:7b` to classify and `nomic-embed-text` to embed, about 5 GB together —
+and creates the database. It's idempotent, so re-run it if a step fails.
+
+Already have Ollama with both models pulled? Skip it and go straight to `serve`.
 
 ## License
 
@@ -68,8 +76,9 @@ AI-assisted work.
 | Canvas, classification, acceptance criteria, dashboards | ● | ● | ● |
 | Code scan (your installed analyzers) | ● | ● | ● |
 | MCP reads | ● | ● | ● |
-| **MCP write tools** — agents create and complete work | | ● | ● |
-| **Code anchors** — work tied to the code that implements it | | ● | ● |
+| Code anchors — tie a work item to the lines that implement it | ● | ● | ● |
+| **MCP write tools** — agents create and complete work, recording where | | ● | ● |
+| **Automatic anchoring** — anchors proposed for you, plus code search | | ● | ● |
 | **Duplicate intelligence** | | ● | ● |
 | **List / Calendar / Kanban views** | | ● | ● |
 | **Multi-user workspaces** (OIDC, Postgres, seats) | | | ● |

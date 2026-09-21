@@ -1285,10 +1285,17 @@ export interface McpCredentials {
   token: string;
 }
 
+/** Mirrors mcpclient.Endpoint in internal/mcpclient/client.go.
+ *  `transport` absent means http, so endpoints saved before stdio existed keep
+ *  working. url/credentials/headers apply to http; command/args/env to stdio. */
 export interface McpEndpoint {
-  url: string;
+  transport?: 'http' | 'stdio';
+  url?: string;
   credentials?: McpCredentials;
   headers?: Record<string, string>;
+  command?: string;
+  args?: string[];
+  env?: string[];
 }
 
 export interface McpTool {

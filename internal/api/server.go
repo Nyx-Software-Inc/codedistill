@@ -502,26 +502,31 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/scratchpads/{id}/code-anchors", s.listScratchpadCodeAnchors)
 
 	// Code Anchors (per-owner nested list/create + flat patch/delete).
-	// Anchor creation is paid (features.CodeAnchors); listing existing
-	// anchors stays open — reads are never license-gated.
+	// Anchoring work to code is FREE: create, edit and delete are ungated, as
+	// listing always was. What stays paid is having anchors made FOR you —
+	// agent auto-anchoring and the semantic code index behind it (features.
+	// CodeAnchors in cmd/codedistill, plus internal/codeindex, which the CE
+	// strips entirely). Charging for the automation rather than the record is
+	// the better line, and it stops the CE half-having anchors: url-detected
+	// ones already appeared there with no way to make one deliberately.
 	mux.HandleFunc("GET /api/v1/items/{id}/code-anchors", s.listCodeAnchorsForOwner(ownerScratchpadItem))
-	mux.HandleFunc("POST /api/v1/items/{id}/code-anchors", s.requireFeature(features.CodeAnchors, s.createCodeAnchorForOwner(ownerScratchpadItem)))
+	mux.HandleFunc("POST /api/v1/items/{id}/code-anchors", s.createCodeAnchorForOwner(ownerScratchpadItem))
 	mux.HandleFunc("GET /api/v1/todos/{id}/code-anchors", s.listCodeAnchorsForOwner(ownerTodoItem))
-	mux.HandleFunc("POST /api/v1/todos/{id}/code-anchors", s.requireFeature(features.CodeAnchors, s.createCodeAnchorForOwner(ownerTodoItem)))
+	mux.HandleFunc("POST /api/v1/todos/{id}/code-anchors", s.createCodeAnchorForOwner(ownerTodoItem))
 	mux.HandleFunc("GET /api/v1/bugs/{id}/code-anchors", s.listCodeAnchorsForOwner(ownerBugItem))
-	mux.HandleFunc("POST /api/v1/bugs/{id}/code-anchors", s.requireFeature(features.CodeAnchors, s.createCodeAnchorForOwner(ownerBugItem)))
+	mux.HandleFunc("POST /api/v1/bugs/{id}/code-anchors", s.createCodeAnchorForOwner(ownerBugItem))
 	mux.HandleFunc("GET /api/v1/kb/{id}/code-anchors", s.listCodeAnchorsForOwner(ownerKnowledgeEntry))
-	mux.HandleFunc("POST /api/v1/kb/{id}/code-anchors", s.requireFeature(features.CodeAnchors, s.createCodeAnchorForOwner(ownerKnowledgeEntry)))
+	mux.HandleFunc("POST /api/v1/kb/{id}/code-anchors", s.createCodeAnchorForOwner(ownerKnowledgeEntry))
 	mux.HandleFunc("GET /api/v1/use-cases/{id}/code-anchors", s.listCodeAnchorsForOwner(ownerUseCaseItem))
-	mux.HandleFunc("POST /api/v1/use-cases/{id}/code-anchors", s.requireFeature(features.CodeAnchors, s.createCodeAnchorForOwner(ownerUseCaseItem)))
+	mux.HandleFunc("POST /api/v1/use-cases/{id}/code-anchors", s.createCodeAnchorForOwner(ownerUseCaseItem))
 	// Gated alongside the ten creation routes above: listing anchors is a free
 	// read, but MUTATING one is the paid authoring capability. Ungated, two
 	// calls got a free user a hand-authored anchor — GET an item's anchors for
 	// an id, then PATCH path/lines/label/provenance (only kind is immutable).
 	// No free internal path is affected: url_detect's refresh and the four
 	// owner-delete cascades call the store directly, not these routes.
-	mux.HandleFunc("PATCH /api/v1/code-anchors/{id}", s.requireFeature(features.CodeAnchors, s.updateCodeAnchor))
-	mux.HandleFunc("DELETE /api/v1/code-anchors/{id}", s.requireFeature(features.CodeAnchors, s.deleteCodeAnchor))
+	mux.HandleFunc("PATCH /api/v1/code-anchors/{id}", s.updateCodeAnchor)
+	mux.HandleFunc("DELETE /api/v1/code-anchors/{id}", s.deleteCodeAnchor)
 
 	// Code metrics (UC-100): per-item churn + change-complexity from the
 	// item's commit anchors. Free read — no feature gate.

@@ -38,6 +38,7 @@ import (
 	"time"
 
 	"codedistill/internal/domain"
+	"codedistill/internal/features"
 	"codedistill/internal/mcpclient"
 	"codedistill/internal/mcpmap"
 	"codedistill/internal/storage"
@@ -182,6 +183,16 @@ func New(store storage.Storage, opts Options) *Worker {
 	connect := opts.Connect
 	if connect == nil {
 		connect = func(ctx context.Context, ep mcpclient.Endpoint) (Client, error) {
+			// Second enforcement point. The API refuses a stdio destination at
+			// configuration time, but a settings row can also be written
+			// directly (PUT /users/{uid}/settings/{key} is authenticated, not
+			// admin-gated), so the worker must refuse to SPAWN one too. On a
+			// multi-user server the child would run as the service account —
+			// which holds DATABASE_URL and every tenant's blobs — rather than
+			// as the user who configured it.
+			if ep.IsStdio() && features.Enabled(features.MultiUser) {
+				return nil, errors.New("stdio MCP destinations are single-user only; refusing to spawn a child process on a multi-user server")
+			}
 			return mcpclient.New(ctx, ep)
 		}
 	}

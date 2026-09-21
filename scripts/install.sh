@@ -19,9 +19,18 @@
 #   2. Finds or installs Ollama (https://ollama.com).
 #   3. Verifies Ollama is reachable on http://localhost:11434.
 #   4. Pulls the two models CodeDistill needs:
-#        qwen2.5:7b        (~4.7 GB) — classifier + Q&A generator
+#        the classifier, SIZED TO THIS MACHINE — qwen2.5:14b at 15 GiB RAM or
+#        more (~9 GB), otherwise qwen2.5:7b (~4.7 GB). Override with --model.
 #        nomic-embed-text  (~270 MB) — embeddings (search, dedup, anchors)
 #   5. Initializes the local CodeDistill database (codedistill.db).
+#   6. Prints the exact serve command, INCLUDING -model when the sized choice
+#      is not the binary's compiled default — otherwise a 14b pull is wasted,
+#      because serve would run 7b regardless.
+#
+# The sizing matches packaging/provision-ollama.sh, which the RPM/DEB run at
+# install time, so a package install and a manual install on the same box pick
+# the same model. That script reads /proc/meminfo and is Linux-only; this one
+# also handles macOS via sysctl.
 #
 # Idempotent. Safe to re-run if a step failed partway through.
 #
@@ -30,6 +39,7 @@
 #   ./install.sh --yes          # non-interactive; assume yes on Ollama install
 #   ./install.sh --skip-ollama  # assume Ollama already set up; just pull models + init
 #   ./install.sh --skip-models  # only set up Ollama + init; pull models later
+#   ./install.sh --model <name> # override the RAM-sized classifier choice
 #   ./install.sh -h | --help
 #
 # Run from the directory containing the codedistill binary (the zip
@@ -66,6 +76,7 @@ trap 's=$?; [[ $s -ne 0 ]] && printf "%s\n%sfailed at line %s (exit %s)%s\n" "" 
 ASSUME_YES=0
 SKIP_OLLAMA=0
 SKIP_MODELS=0
+MODEL=""            # empty = size it to this machine (detect_model)
 BIN_PATH=""
 DB_PATH="codedistill.db"
 
@@ -91,6 +102,7 @@ Usage:
   ./install.sh --yes, -y       # non-interactive; assume yes on the Ollama install
   ./install.sh --skip-ollama   # Ollama already set up; just pull models + init
   ./install.sh --skip-models   # set up Ollama + init; pull models later
+  ./install.sh --model <name>  # override the RAM-sized classifier choice
   ./install.sh --bin <path>    # path to the codedistill binary
   ./install.sh --db <path>     # database path (default: codedistill.db)
   ./install.sh -h, --help      # this message
@@ -102,6 +114,7 @@ while [[ $# -gt 0 ]]; do
     --yes|-y)         ASSUME_YES=1 ;;
     --skip-ollama)    SKIP_OLLAMA=1 ;;
     --skip-models)    SKIP_MODELS=1 ;;
+    --model)          shift; MODEL="$1" ;;
     --bin)            shift; BIN_PATH="$1" ;;
     --db)             shift; DB_PATH="$1" ;;
     -h|--help)        usage; exit 0 ;;
@@ -279,10 +292,37 @@ pull_model() {
   ok "$model ready"
 }
 
+# Size the classifier to the machine, the way the Linux packages already do
+# (packaging/provision-ollama.sh). That script reads /proc/meminfo and is
+# Linux-only; this also runs on macOS, which needs sysctl. Same 15 GiB
+# threshold, so a package install and a manual install on one box agree.
+detect_model() {
+  local kb=0 bytes=0
+  case "$OS" in
+    linux) kb="$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)" ;;
+    macos) bytes="$(sysctl -n hw.memsize 2>/dev/null || echo 0)"; kb=$((bytes / 1024)) ;;
+  esac
+  if [[ "$kb" -ge 15728640 ]]; then printf 'qwen2.5:14b'; else printf 'qwen2.5:7b'; fi
+}
+
+# Runs even under --skip-models: the closing instructions need $MODEL either
+# way, and a user who skips the pull still has to be told which model to run.
+step "choosing the classifier model"
+if [[ -n "$MODEL" ]]; then
+  ok "using --model $MODEL"
+else
+  MODEL="$(detect_model)"
+  ok "sized to this machine: $MODEL"
+fi
+
 if [[ $SKIP_MODELS -eq 1 ]]; then
   step "skipping model pulls (--skip-models)"
 else
-  pull_model "qwen2.5:7b"        "~4.7 GB"
+  if [[ "$MODEL" == "qwen2.5:14b" ]]; then
+    pull_model "$MODEL" "~9 GB"
+  else
+    pull_model "$MODEL" "~4.7 GB"
+  fi
   pull_model "nomic-embed-text"  "~270 MB"
 fi
 
@@ -297,7 +337,15 @@ ok "database ready"
 # Done.
 # ──────────────────────────────────────────────────────────────────────
 printf '\n%s%sdone — start CodeDistill:%s\n' "$C_GREEN" "$C_BOLD" "$C_RESET"
-printf '  %s%s -db %s serve%s\n\n' "$C_BOLD" "$BIN_PATH" "$DB_PATH" "$C_RESET"
+# -model is included when it differs from the binary's compiled default:
+# without it a 14b pull is wasted, because serve would run 7b regardless. The
+# packages avoid this by putting CODEDISTILL_MODEL in the systemd unit; a manual
+# install has no unit, so the command we print has to carry it.
+if [[ "$MODEL" != "qwen2.5:7b" ]]; then
+  printf '  %s%s -db %s -model %s serve%s\n\n' "$C_BOLD" "$BIN_PATH" "$DB_PATH" "$MODEL" "$C_RESET"
+else
+  printf '  %s%s -db %s serve%s\n\n' "$C_BOLD" "$BIN_PATH" "$DB_PATH" "$C_RESET"
+fi
 printf '%sthen open%s http://localhost:8080\n\n' "$C_DIM" "$C_RESET"
 printf '%snext steps (optional):%s\n' "$C_BOLD" "$C_RESET"
 printf '  - configure a project repo_root via the Project tab in the drawer\n'

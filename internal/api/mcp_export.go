@@ -15,9 +15,11 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
 
+	"codedistill/internal/features"
 	"codedistill/internal/mcpclient"
 	"codedistill/internal/mcpmap"
 	"codedistill/internal/mcpworker"
@@ -61,6 +63,10 @@ func (s *Server) discoverDestination(w http.ResponseWriter, r *http.Request) {
 	// Cap the call so a hung remote can't pin the request goroutine.
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
+	if err := checkStdioPolicy(req.Endpoint); err != nil {
+		writeMsg(w, http.StatusForbidden, err.Error())
+		return
+	}
 	cli, err := mcpclient.New(ctx, req.Endpoint)
 	if err != nil {
 		// Connection / handshake failure — surface the message verbatim
@@ -242,4 +248,25 @@ func (s *Server) migrateMcpExport(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// stdioAllowed reports whether this install may spawn a local MCP child
+// process. It may not on a multi-user server: settings are per-user and
+// PUT /users/{uid}/settings/{key} is authenticated but NOT admin-gated, while
+// the process runs as one service account holding DATABASE_URL and every
+// tenant's blobs. Allowing it would turn "set my own preference" into code
+// execution as that account.
+//
+// This is not a restriction users lose anything to — a stdio MCP server is a
+// local child process, so on shared infrastructure you would point at an HTTP
+// endpoint regardless.
+func stdioAllowed() bool { return !features.Enabled(features.MultiUser) }
+
+// checkStdioPolicy returns a non-nil error when ep would spawn a process on an
+// install that must not.
+func checkStdioPolicy(ep mcpclient.Endpoint) error {
+	if ep.IsStdio() && !stdioAllowed() {
+		return errors.New("stdio MCP destinations are single-user only — on a multi-user server the command would run as the service account, not as you. Use an http endpoint instead.")
+	}
+	return nil
 }

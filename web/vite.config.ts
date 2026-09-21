@@ -82,7 +82,10 @@ export default defineConfig({
       },
       workbox: {
         // Shell only — entry bundle, styles, html, icons.
-        globPatterns: ['index.html', 'assets/index-*.{js,css}', 'icons/*.png', '*.svg'],
+        // No '*.svg': nothing ships at the dist root, so Workbox emitted a
+        // "glob pattern doesn't match any files" warning on every build — the
+        // first thing someone building from source sees (cold-start review).
+        globPatterns: ['index.html', 'assets/index-*.{js,css}', 'icons/*.png'],
         navigateFallback: 'index.html',
         // /excalidraw/ is a SEPARATE vendored app loaded in an iframe by
         // the sketch editor — it must NOT fall back to the main app shell

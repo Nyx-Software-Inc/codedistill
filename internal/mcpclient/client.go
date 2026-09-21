@@ -50,18 +50,61 @@ import (
 // block the queue on a slow remote.
 const defaultTimeout = 30 * time.Second
 
-// Endpoint addresses a remote MCP server. URL is required. Credentials
-// is optional (nil = unauthenticated; correct for our own MCP server and
-// for testing, rare in practice for production destinations).
+// Transport selects how we reach the destination.
+//
+// TransportHTTP is a remote server over Streamable-HTTP. TransportStdio spawns
+// a LOCAL child process and speaks over its stdin/stdout — the shape used by
+// MCP servers that ship as a command rather than a service.
+type Transport string
+
+const (
+	TransportHTTP  Transport = "http"
+	TransportStdio Transport = "stdio"
+)
+
+// Endpoint addresses an MCP server.
+//
+// For TransportHTTP (the default when Transport is empty) URL is required.
+// For TransportStdio, Command is required and URL/Credentials/Headers are
+// meaningless — there is no request to attach a header to.
+//
+// Credentials is optional (nil = unauthenticated; correct for our own MCP
+// server and for testing, rare for production HTTP destinations).
 type Endpoint struct {
-	URL         string        `json:"url"`
+	// Transport defaults to TransportHTTP when empty, so every endpoint
+	// persisted before stdio existed keeps working untouched.
+	Transport   Transport     `json:"transport,omitempty"`
+	URL         string        `json:"url,omitempty"`
 	Credentials *Credentials  `json:"credentials,omitempty"`
 	Timeout     time.Duration `json:"timeout_ns,omitempty"`
 	// Headers is for non-credential headers the destination may require
 	// (e.g. a tenant id). Credentials are kept separate so they can be
 	// scrubbed from logs / settings exports independently.
 	Headers map[string]string `json:"headers,omitempty"`
+
+	// Command + Args + Env apply to TransportStdio only. Env entries are
+	// "KEY=value" and are passed to the child IN ADDITION to the parent's
+	// environment.
+	Command string   `json:"command,omitempty"`
+	Args    []string `json:"args,omitempty"`
+	Env     []string `json:"env,omitempty"`
 }
+
+// transport returns the effective transport, treating empty as HTTP so
+// pre-existing settings rows keep their meaning.
+func (e Endpoint) transport() Transport {
+	if e.Transport == TransportStdio {
+		return TransportStdio
+	}
+	return TransportHTTP
+}
+
+// IsStdio reports whether this endpoint spawns a local process. Callers use it
+// to apply policy that this package deliberately does not know about — notably
+// that a stdio destination must not be reachable on a multi-user server, where
+// the child would run as the service account rather than as the user who
+// configured it.
+func (e Endpoint) IsStdio() bool { return e.transport() == TransportStdio }
 
 // Credentials is a discriminated union over the auth styles real MCP
 // servers actually use today. We deliberately don't model OAuth flows
@@ -129,25 +172,41 @@ type Client struct {
 // destination is unreachable / misconfigured; the worker should surface
 // the failure and back off rather than retry tightly.
 func New(ctx context.Context, ep Endpoint) (*Client, error) {
-	if ep.URL == "" {
-		return nil, fmt.Errorf("endpoint URL required")
-	}
-	timeout := ep.Timeout
-	if timeout <= 0 {
-		timeout = defaultTimeout
-	}
-
-	headers := mergeHeaders(ep.Headers, ep.Credentials)
-	opts := []transport.StreamableHTTPCOption{
-		transport.WithHTTPTimeout(timeout),
-	}
-	if len(headers) > 0 {
-		opts = append(opts, transport.WithHTTPHeaders(headers))
-	}
-
-	inner, err := mcpcli.NewStreamableHttpClient(ep.URL, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("mcpclient: build transport: %w", err)
+	var (
+		inner *mcpcli.Client
+		err   error
+	)
+	switch ep.transport() {
+	case TransportStdio:
+		if ep.Command == "" {
+			return nil, fmt.Errorf("endpoint command required for stdio transport")
+		}
+		// The child inherits our environment; ep.Env adds to it. mcp-go owns the
+		// process lifecycle and Close() reaps it, which is why Close is not
+		// optional for a stdio client the way it is forgiving for HTTP.
+		inner, err = mcpcli.NewStdioMCPClient(ep.Command, ep.Env, ep.Args...)
+		if err != nil {
+			return nil, fmt.Errorf("mcpclient: start %q: %w", ep.Command, err)
+		}
+	default:
+		if ep.URL == "" {
+			return nil, fmt.Errorf("endpoint URL required")
+		}
+		timeout := ep.Timeout
+		if timeout <= 0 {
+			timeout = defaultTimeout
+		}
+		headers := mergeHeaders(ep.Headers, ep.Credentials)
+		opts := []transport.StreamableHTTPCOption{
+			transport.WithHTTPTimeout(timeout),
+		}
+		if len(headers) > 0 {
+			opts = append(opts, transport.WithHTTPHeaders(headers))
+		}
+		inner, err = mcpcli.NewStreamableHttpClient(ep.URL, opts...)
+		if err != nil {
+			return nil, fmt.Errorf("mcpclient: build transport: %w", err)
+		}
 	}
 
 	if err := inner.Start(ctx); err != nil {

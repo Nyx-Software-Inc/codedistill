@@ -23,11 +23,18 @@ import (
 	"codedistill/internal/domain"
 )
 
-// The community build must refuse to MUTATE a code anchor. Creation was always
-// gated on all ten POST routes, but the flat PATCH and DELETE shipped ungated,
-// so two calls got a free user the paid authoring capability: GET an item's
-// anchors (a free read, deliberately) to learn an id, then PATCH path, line
-// range, label or provenance — only kind is immutable.
+// Anchoring is FREE, and the community build must be able to do it end to end.
+//
+// This test previously asserted the opposite — that PATCH and DELETE returned
+// 402 in the CE (item 6 closed a hole where creation was gated but the flat
+// PATCH/DELETE were not). That gate was removed deliberately: creating, editing
+// and deleting an anchor is Community, and what stays paid is having anchors
+// made FOR you — agent auto-anchoring and the semantic code index behind it.
+//
+// The inversion is the point of keeping this test rather than deleting it: it
+// now guards the decision in the direction it actually runs. Charging for the
+// record was also incoherent, since url-detected anchors already appeared in
+// the CE with no way to author one deliberately.
 //
 // Seeded through the store rather than the API because POST is itself 402 in
 // this build; the point is to exercise the mutation routes on an anchor that
@@ -36,7 +43,7 @@ import (
 //
 // oss-tagged: under the commercial build baselineAllows() returns true for
 // every feature, so requireFeature never refuses and there is nothing to assert.
-func TestCodeAnchorMutationIsPaid_OSS(t *testing.T) {
+func TestCodeAnchorAuthoringIsFree_OSS(t *testing.T) {
 	srv, _, store := setupWithStore(t)
 	ctx := context.Background()
 	now := time.Now().UTC()
@@ -59,20 +66,23 @@ func TestCodeAnchorMutationIsPaid_OSS(t *testing.T) {
 		t.Fatalf("seed anchor: %v", err)
 	}
 
-	// Listing stays open — reads are never license-gated.
+	// Listing was always open — reads are never license-gated.
 	doJSON(t, srv, "GET", "/api/v1/items/"+item.ID+"/code-anchors", nil, 200, nil)
 
-	// Mutating is not.
-	doJSON(t, srv, "PATCH", "/api/v1/code-anchors/"+anchor.ID,
-		map[string]any{"path": "somewhere/else.go", "line_start": 10, "line_end": 20}, 402, nil)
-	doJSON(t, srv, "DELETE", "/api/v1/code-anchors/"+anchor.ID, nil, 402, nil)
+	// Creating one is now open too.
+	doJSON(t, srv, "POST", "/api/v1/items/"+item.ID+"/code-anchors",
+		map[string]any{"kind": "file", "path": "internal/new.go", "line_start": 3, "line_end": 9}, 201, nil)
 
-	// And the refusal must not have taken effect anyway.
+	// So is editing.
+	doJSON(t, srv, "PATCH", "/api/v1/code-anchors/"+anchor.ID,
+		map[string]any{"path": "somewhere/else.go", "line_start": 10, "line_end": 20}, 200, nil)
+
+	// And the edit must actually have taken effect.
 	got, err := store.GetCodeAnchor(ctx, anchor.ID)
 	if err != nil {
-		t.Fatalf("anchor should still exist after a refused DELETE: %v", err)
+		t.Fatalf("anchor should still exist after an accepted PATCH: %v", err)
 	}
-	if got.Path != "main.go" || got.LineStart != 1 {
-		t.Errorf("refused PATCH still mutated the anchor: %+v", got)
+	if got.Path != "somewhere/else.go" || got.LineStart != 10 {
+		t.Errorf("PATCH was accepted but the anchor did not change: %+v", got)
 	}
 }
