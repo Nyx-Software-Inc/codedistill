@@ -1362,3 +1362,356 @@ export const migrateMcpExport = (itemType: McpItemType) =>
   req<{ enqueued: number; skipped: number }>('POST', '/mcp-export/migrate', {
     item_type: itemType,
   });
+
+// ── Model providers and roles ────────────────────────────────────────────────
+// A provider is a connection; a role is a job. The API never returns an API
+// key — has_api_key is all the UI gets, and all it needs.
+
+/** OPEN vocabulary, matching the database (migration 0067 dropped the CHECK).
+ *  Go validates the value; a closed union here silently mislabelled every
+ *  adapter added after it was written — Anthropic and Gemini were both cast
+ *  through it as 'openai'. The known values are documented, not enforced:
+ *  'ollama' | 'openai' | 'anthropic' | 'gemini'. */
+export type ModelProtocol = string;
+
+export interface ModelProvider {
+  id: string;
+  name: string;
+  protocol: ModelProtocol;
+  endpoint: string;
+  model: string;
+  has_api_key: boolean;
+  context_tokens: number;
+  is_local: boolean;
+  enabled: boolean;
+  last_ok_at?: string;
+  last_error?: string;
+}
+
+/** Five outcomes, not a boolean. context_short is the dangerous one:
+ *  reachable, generating, and silently truncating long prompts. */
+export type ProbeOutcome =
+  | 'unreachable' | 'model_unusable' | 'working' | 'verified' | 'context_short';
+
+export interface ProbeResult {
+  outcome: ProbeOutcome;
+  detail: string;
+  reachable: boolean;
+  can_generate: boolean;
+  context_asked?: number;
+  context_seen?: number;
+  latency_ms: number;
+  model?: string;
+}
+
+export interface WorkerBindings {
+  /** worker type -> provider id */
+  workers: Record<string, string>;
+  known_types: string[];
+  /** Solutioner and challenger on one provider: a challenger that shares the
+   *  solutioner's blind spots. A warning, never a block. */
+  epistemic_pair_shared: boolean;
+}
+
+export const listModelProviders = () =>
+  req<ModelProvider[]>('GET', '/model-providers');
+
+export const createModelProvider = (p: Partial<ModelProvider> & { api_key?: string }) =>
+  req<ModelProvider>('POST', '/model-providers', p);
+
+export const updateModelProvider = (id: string, p: Partial<ModelProvider> & { api_key?: string }) =>
+  req<void>('PATCH', `/model-providers/${id}`, p);
+
+export const deleteModelProvider = (id: string) =>
+  req<void>('DELETE', `/model-providers/${id}`);
+
+export const testModelProvider = (id: string) =>
+  req<ProbeResult>('POST', `/model-providers/${id}/test`);
+
+export const listWorkflowWorkers = (projectId?: string) =>
+  req<WorkerBindings>('GET', `/workflow-workers${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ''}`);
+
+export const setWorkerModel = (workerType: string, providerId: string, projectId?: string) =>
+  req<void>('PUT', `/workflow-workers/${workerType}`, {
+    provider_id: providerId,
+    project_id: projectId ?? '',
+  });
+
+export interface ModelSummary {
+  id: string;
+  context_length?: number;
+  parameter_size?: string;
+  family?: string;
+}
+
+export interface ModelDescription {
+  context_length?: number;
+  family?: string;
+  parameter_size?: string;
+  quantization?: string;
+  capabilities?: string[];
+  /** How this was learned: a fact the server stated, not a number typed by a
+   *  human. Absent when the provider would not say. */
+  source?: string;
+}
+
+export interface DiscoverResult {
+  models: ModelSummary[];
+  described?: ModelDescription;
+  error?: string;
+  describe_error?: string;
+}
+
+/** Query a provider — saved or not — for the models it offers, and optionally
+ *  describe one. Pass provider_id to reuse a stored credential the browser
+ *  never sees. */
+export const discoverModels = (body: {
+  provider_id?: string; protocol?: string; endpoint?: string;
+  api_key?: string; model?: string;
+}) => req<DiscoverResult>('POST', '/model-providers/discover', body);
+
+export interface Vendor {
+  id: string;
+  name: string;
+  protocol?: string;
+  default_endpoint?: string;
+  needs_key: boolean;
+  lists_models: boolean;
+  /** False means a typed context window is user-supplied, not verified — the
+   *  UI must not present it as a fact the provider stated. */
+  reports_context: boolean;
+  /** False means this product cannot speak the vendor's protocol at all.
+   *  Listed anyway, with a note saying what to do instead. */
+  supported: boolean;
+  note?: string;
+}
+
+export const listVendors = () => req<Vendor[]>('GET', '/model-vendors');
+
+// ── Jobs ─────────────────────────────────────────────────────────────────────
+
+export interface Job {
+  id: string;
+  project_id: string;
+  /** The workflow: 'decompose', 'arch_draft', … */
+  type: string;
+  scope_label?: string;
+  /** paused is distinct from cancelled (abandoned) and interrupted (the
+   *  process died): a human stopped it and expects it back. */
+  status: 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted' | 'paused';
+  scope_kind?: string;
+  scope_id?: string;
+  phase?: string;
+  done: number;
+  total: number;
+  /** -1 when the total is not yet known. Render indeterminate, never 0: a bar
+   *  pinned at zero reads as broken, one that jumps reads as a lie. */
+  percent: number;
+  eta_seconds: number;
+  elapsed_seconds: number;
+  worker_type?: string;
+  provider_name?: string;
+  provider_local?: boolean;
+  model?: string;
+  tokens_in: number;
+  tokens_out: number;
+  error?: string;
+  started_at: string;
+  finished_at?: string;
+
+  /** What the run produced, for workflows whose output waits on a person.
+   *  A decompose that "succeeded" has not finished doing anything useful
+   *  until someone has judged what it found. */
+  proposals?: number;
+  awaiting_review?: number;
+}
+
+export const listJobs = (projectId: string, status?: string, limit = 50) =>
+  req<Job[]>(
+    'GET',
+    `/jobs?project_id=${encodeURIComponent(projectId)}` +
+      (status ? `&status=${status}` : '') +
+      `&limit=${limit}`,
+  );
+
+export const cancelJob = (id: string) => req<void>('POST', `/jobs/${id}/cancel`);
+
+export interface JobPhase {
+  id: string;
+  ordinal: number;
+  phase: string;
+  worker_type?: string;
+  /** The exchange number when workers take turns. 0 for a single-pass phase. */
+  round?: number;
+  done: number;
+  total: number;
+  tokens_in: number;
+  tokens_out: number;
+  error?: string;
+  started_at: string;
+  finished_at?: string;
+  seconds: number;
+  running: boolean;
+}
+
+/** What a phase usually costs, as a median over SUCCEEDED runs. This is what
+ *  turns "12 minutes elapsed" into a verdict. */
+export interface PhaseNorm {
+  phase: string;
+  median_sec: number;
+  runs: number;
+}
+
+export interface JobDetail {
+  job: Job;
+  phases: JobPhase[];
+  norms: PhaseNorm[];
+}
+
+export const getJob = (id: string) => req<JobDetail>('GET', `/jobs/${id}`);
+
+/** Pausing is not instant: a model call is atomic, so the stop lands at the
+ *  next checkpoint. Refused (409) for a workflow that cannot resume. */
+export const pauseJob = (id: string) =>
+  req<{ status: string; note: string }>('POST', `/jobs/${id}/pause`);
+
+export interface WorkflowStep {
+  ordinal: number;
+  worker_type: string;
+  label?: string;
+  needs_context?: number;
+  provider_id?: string;
+  provider_name?: string;
+  provider_local?: boolean;
+  context_tokens?: number;
+}
+
+export interface Workflow {
+  id: string;
+  name: string;
+  description?: string;
+  builtin: boolean;
+  /** Whether a stopped run continues where it left off. Drives whether Pause
+   *  is offered at all — a Pause that silently means Cancel is worse than none. */
+  resumable: boolean;
+  enabled: boolean;
+  steps: WorkflowStep[];
+  /** What the submission dialog asks for. Declared as data, so a workflow
+   *  nobody has written yet gets a working form with no front-end change. */
+  params: WorkflowParam[];
+}
+
+export interface WorkflowParam {
+  key: string;
+  label: string;
+  help?: string;
+  /** Open vocabulary. An unrecognised type renders as text rather than being
+   *  dropped: a param that silently vanishes submits a job missing an argument. */
+  type: string;
+  required: boolean;
+  default?: string;
+  options?: { value: string; label: string }[];
+  multiple?: boolean;
+}
+
+export const listWorkflows = () => req<Workflow[]>('GET', '/workflows');
+
+export interface SubmitResult {
+  job_id: string;
+  label?: string;
+  model?: string;
+  provider?: string;
+  /** True when the chosen model is not on this machine. Surfaced every time:
+   *  a document leaving the machine must never be discovered afterwards. */
+  leaves_machine?: boolean;
+  note?: string;
+}
+
+export const submitJob = (workflowId: string, projectId: string, params: Record<string, string>) =>
+  req<SubmitResult>('POST', '/jobs', {
+    workflow_id: workflowId, project_id: projectId, params,
+  });
+export const setStepProvider = (workflowId: string, ordinal: number, providerId: string) =>
+  req<void>('PUT', `/workflows/${workflowId}/steps/${ordinal}/provider`, {
+    provider_id: providerId,
+  });
+
+
+// ── Decompose review ────────────────────────────────────────────────────────
+//
+// A run produces PROPOSALS, never items. Turning one into work is a human act,
+// which until now could only be performed from the command line.
+
+export interface DecomposeRunSummary {
+  job_id: string;
+  source_item_id: string;
+  source_label: string;
+  sentences: number;
+  model?: string;
+  created_at: string;
+  total: number;
+  pending: number;
+  accepted: number;
+  rejected: number;
+  linked: number;
+}
+
+export interface DecomposeProposal {
+  id: string;
+  job_id: string;
+  kind: string;
+  subject: string;
+  body?: string;
+  origin: string;
+  corroborated: boolean;
+  external_ref?: string;
+  priority?: string;
+  /** Line spans in the source document. This is the proposal's whole claim to
+   *  legitimacy — computed before any model ran, so a citation cannot be
+   *  invented. */
+  lines: [number, number][];
+  status: 'pending' | 'accepted' | 'rejected' | 'linked';
+  created_item_id?: string;
+  linked_item_id?: string;
+  reject_reason?: string;
+}
+
+export interface DecomposeRunDetail {
+  run: DecomposeRunSummary & {
+    corroborated: number;
+    table_only: number;
+    prose_only: number;
+    tables_read: number;
+    declined_nodes: number;
+  };
+  proposals: DecomposeProposal[];
+  /** The document itself, so a citation can be read rather than trusted.
+   *  Absent when the source item has been deleted. */
+  source_lines?: string[];
+}
+
+export const listDecomposeRuns = (projectId: string, limit = 50) =>
+  req<DecomposeRunSummary[]>('GET', `/decompose/runs?project_id=${encodeURIComponent(projectId)}&limit=${limit}`);
+
+export const getDecomposeRun = (jobId: string) =>
+  req<DecomposeRunDetail>('GET', `/decompose/runs/${jobId}`);
+
+export interface Decision {
+  id: string;
+  status: 'accepted' | 'rejected' | 'linked';
+  item_id?: string;
+  reason?: string;
+}
+
+export interface BatchResult {
+  accepted: number;
+  rejected: number;
+  linked: number;
+  items: Record<string, string>;
+  failed: { id: string; subject?: string; error: string }[];
+}
+
+/** Applies a whole review in one call. Forty separate requests would make a
+ *  partial failure invisible; this returns a verdict per proposal. */
+export const decideProposals = (jobId: string, decisions: Decision[]) =>
+  req<BatchResult>('POST', `/decompose/runs/${jobId}/decide`, { decisions });

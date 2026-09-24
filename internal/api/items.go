@@ -440,7 +440,7 @@ func (s *Server) createItem(w http.ResponseWriter, r *http.Request) {
 	// note arrives as a small card, not a full-width slab. Binary-ish
 	// types keep the legacy default; the upload paths size those.
 	if textualContentType(ct) {
-		item.GridW, item.GridH = naturalSize(req.Content)
+		item.GridW, item.GridH = domain.NaturalCardSize(req.Content)
 	}
 	if err := s.store.CreateScratchpadItem(r.Context(), item); err != nil {
 		writeErr(w, statusFor(err), err)

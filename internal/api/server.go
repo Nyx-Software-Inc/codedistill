@@ -97,12 +97,16 @@ type Server struct {
 	// the typed nil-receiver path on *events.Bus, so callers never
 	// need to check. Wired in serve mode via WithEventBus.
 	bus *events.Bus
-	// archJobs tracks the per-project background architecture-draft
+	// archRuns tracks the per-project background architecture-draft
 	// enrichment jobs (async draft; one active job per project). Guarded
 	// by archJobsMu; entries persist after completion so the panel can
 	// show the final done/total until the next draft.
-	archJobs   map[string]*archJob
+	archRuns   map[string]*archRun
 	archJobsMu sync.Mutex
+
+	// jobRuns holds a cancel func per job this server started, so Cancel
+	// actually stops the work rather than only marking the row.
+	jobRuns jobRegistry
 	// criteriaJobs tracks in-flight "Draft with AI" acceptance-criteria runs by
 	// owner (type+id). The draft runs as a background job on context.Background
 	// so closing the modal / reloading / closing the tab can't cancel it; the
@@ -565,6 +569,34 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/use-cases/{id}/verify", s.triggerVerificationForOwner(ownerUseCaseItem))
 	// Installed local models for the reviewer-model picker (Settings → Verification).
 	mux.HandleFunc("GET /api/v1/ollama/models", s.ollamaModels)
+
+	// Model providers and the roles that use them. testProvider is the one
+	// that matters: it generates and proves the context window, because a
+	// provider that is merely reachable will still silently truncate.
+	mux.HandleFunc("GET /api/v1/model-providers", s.listProviders)
+	mux.HandleFunc("POST /api/v1/model-providers", s.createProvider)
+	mux.HandleFunc("PATCH /api/v1/model-providers/{id}", s.updateProvider)
+	mux.HandleFunc("DELETE /api/v1/model-providers/{id}", s.deleteProvider)
+	mux.HandleFunc("POST /api/v1/model-providers/{id}/test", s.testProvider)
+	// Discovery on an UNSAVED provider: see the real model list before
+	// committing to a row, so a mistyped model fails while you are looking at it.
+	// The jobs monitor: what is running, on which model, and how far along.
+	mux.HandleFunc("GET /api/v1/decompose/runs", s.listDecomposeRuns)
+	mux.HandleFunc("GET /api/v1/decompose/runs/{jobID}", s.getDecomposeRun)
+	mux.HandleFunc("POST /api/v1/decompose/runs/{jobID}/accept-all", s.acceptAllProposals)
+	mux.HandleFunc("POST /api/v1/decompose/runs/{jobID}/decide", s.decideBatch)
+	mux.HandleFunc("POST /api/v1/decompose/proposals/{id}/decide", s.decideProposal)
+	mux.HandleFunc("GET /api/v1/jobs", s.listJobs)
+	mux.HandleFunc("POST /api/v1/jobs", s.submitJob)
+	mux.HandleFunc("GET /api/v1/workflows", s.listWorkflows)
+	mux.HandleFunc("PUT /api/v1/workflows/{id}/steps/{ordinal}/provider", s.setStepProvider)
+	mux.HandleFunc("GET /api/v1/jobs/{id}", s.jobDetail)
+	mux.HandleFunc("POST /api/v1/jobs/{id}/pause", s.pauseJob)
+	mux.HandleFunc("POST /api/v1/jobs/{id}/cancel", s.cancelJob)
+	mux.HandleFunc("GET /api/v1/model-vendors", s.listVendors)
+	mux.HandleFunc("POST /api/v1/model-providers/discover", s.discoverModels)
+	mux.HandleFunc("GET /api/v1/workflow-workers", s.listWorkers)
+	mux.HandleFunc("PUT /api/v1/workflow-workers/{type}", s.setWorkerModel)
 	// Review queue (glass-box Phase 4): implemented items ranked by risk. Free read.
 	mux.HandleFunc("GET /api/v1/projects/{id}/review-queue", s.reviewQueue)
 	// Drift detection (glass-box Phase 5): untraced code / unbuilt intent / diverged. Free read.

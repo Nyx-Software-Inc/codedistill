@@ -17,9 +17,11 @@
   import InputSettings from './InputSettings.svelte';
   import CanvasSettings from './CanvasSettings.svelte';
   import McpExportSettings from './McpExportSettings.svelte';
+  import ModelProviders from './ModelProviders.svelte';
+  import WorkflowSettings from './WorkflowSettings.svelte';
   import ServerAccessSettings from './ServerAccessSettings.svelte';
 
-  type Section = 'appearance' | 'indexing' | 'input' | 'canvas' | 'mcp' | 'server';
+  type Section = 'appearance' | 'indexing' | 'input' | 'canvas' | 'models' | 'workflows' | 'mcp' | 'server';
 
   type Props = { userId: string };
   let { userId }: Props = $props();
@@ -64,6 +66,22 @@
     <button
       type="button"
       class="nav-item"
+      class:active={active === 'models'}
+      onclick={() => (active = 'models')}
+    >
+      Models
+    </button>
+    <button
+      type="button"
+      class="nav-item"
+      class:active={active === 'workflows'}
+      onclick={() => (active = 'workflows')}
+    >
+      Workflows
+    </button>
+    <button
+      type="button"
+      class="nav-item"
       class:active={active === 'mcp'}
       onclick={() => (active = 'mcp')}
     >
@@ -87,6 +105,10 @@
       <InputSettings />
     {:else if active === 'canvas'}
       <CanvasSettings />
+    {:else if active === 'models'}
+      <ModelProviders />
+    {:else if active === 'workflows'}
+      <WorkflowSettings />
     {:else if active === 'mcp'}
       <McpExportSettings {userId} />
     {:else if active === 'server'}

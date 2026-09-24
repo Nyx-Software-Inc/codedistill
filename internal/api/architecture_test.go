@@ -280,3 +280,92 @@ func TestInArchScope(t *testing.T) {
 		}
 	}
 }
+
+// The draft run is a row in `jobs` now, not an entry in a private map. These
+// cover what only the durable version can do — and what would silently break
+// if the port lost it.
+func TestArchDraft_IsARecordedJob(t *testing.T) {
+	ctx := context.Background()
+	sug := &fakeSuggester{resp: `{"name":"Enriched","kind":"service","description":"does things"}`}
+	srv, store := archServer(t, sug)
+	root := initArchRepo(t)
+	if err := store.UpdateProject(ctx, &domain.Project{ID: "p1", Name: "P", RepoRoot: root}); err != nil {
+		t.Fatalf("set repo: %v", err)
+	}
+
+	var resp architectureResp
+	doJSON(t, srv, "POST", "/api/v1/projects/p1/architecture/draft", nil, 200, &resp)
+
+	// It shows up where every other long-running job does.
+	jobs, err := store.ListJobs(ctx, "p1", nil, 0)
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("ListJobs = %d, %v — want the draft run", len(jobs), err)
+	}
+	if jobs[0].Type != domain.JobArchDraft {
+		t.Fatalf("job type = %q, want %q", jobs[0].Type, domain.JobArchDraft)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		doJSON(t, srv, "GET", "/api/v1/projects/p1/architecture", nil, 200, &resp)
+		if resp.DraftJob != nil && !resp.DraftJob.Running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("job never finished: %+v", resp.DraftJob)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// A finished run keeps reporting its tally — the behaviour the old map
+	// provided by holding completed entries.
+	if resp.DraftJob.Total != 2 || resp.DraftJob.Done != 2 {
+		t.Errorf("final tally = %d/%d, want 2/2", resp.DraftJob.Done, resp.DraftJob.Total)
+	}
+	done, _ := store.ListJobs(ctx, "p1", []string{domain.JobSucceeded}, 0)
+	if len(done) != 1 {
+		t.Fatalf("run not recorded as succeeded: %+v", jobs)
+	}
+	if done[0].FinishedAt == nil {
+		t.Error("finished_at not stamped")
+	}
+}
+
+func TestArchDraft_RestartDoesNotStrandTheProject(t *testing.T) {
+	ctx := context.Background()
+	srv, store := archServer(t, &fakeSuggester{resp: `{"name":"X","kind":"service","description":"d"}`})
+	_ = srv
+
+	// A run that was going when the process died stays "running" in the table,
+	// because nothing got the chance to close it.
+	now := time.Now().UTC()
+	stuck := &domain.Job{
+		ID: "stale", ProjectID: "p1", Type: domain.JobArchDraft,
+		ScopeKind: "project", ScopeID: "p1", Status: domain.JobRunning,
+		Total: 24, Done: 7, StartedAt: now, UpdatedAt: now,
+	}
+	if err := store.CreateJob(ctx, stuck); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if blocked, _ := store.ActiveJobFor(ctx, domain.JobArchDraft, "project", "p1"); blocked == nil {
+		t.Fatal("precondition: the stale run should be blocking")
+	}
+
+	// This is what cmdServe does before anything can start a new run.
+	if _, err := store.InterruptStaleJobs(ctx, time.Now().UTC()); err != nil {
+		t.Fatalf("interrupt: %v", err)
+	}
+
+	if blocked, _ := store.ActiveJobFor(ctx, domain.JobArchDraft, "project", "p1"); blocked != nil {
+		t.Fatal("the project is still stranded — drafting can never be retried")
+	}
+	got, _ := store.GetJob(ctx, "stale")
+	if got.Status != domain.JobInterrupted {
+		t.Errorf("status = %q, want interrupted (nothing went wrong with the work)", got.Status)
+	}
+	// Progress is preserved: 7 components really were characterised, and the
+	// resume path derives the rest from the nodes themselves.
+	if got.Done != 7 {
+		t.Errorf("done = %d, want 7 — interrupting must not discard measured progress", got.Done)
+	}
+}

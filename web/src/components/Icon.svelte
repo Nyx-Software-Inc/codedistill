@@ -23,7 +23,7 @@
     | 'anchor' | 'sparkle' | 'link'
     | 'move'
     // Header nav + canvas-toolbar icons (signature-hue set).
-    | 'menu' | 'dashboard' | 'check' | 'architecture' | 'datamodel' | 'analysis'
+    | 'menu' | 'dashboard' | 'check' | 'jobs' | 'architecture' | 'datamodel' | 'analysis'
     | 'ask' | 'help' | 'search' | 'lists'
     | 'restack' | 'canvas' | 'listview' | 'calendar' | 'kanban'
     | 'duplicates' | 'archived' | 'export' | 'upload';
@@ -212,6 +212,8 @@
   <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="18" x2="21" y2="18" /></svg>
 {:else if name === 'dashboard'}
   <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>
+{:else if name === 'jobs'}
+  <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h3.5l2-6 3.5 12 3-9 2 3H21" /></svg>
 {:else if name === 'check'}
   <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 11.1V12a10 10 0 1 1-5.93-9.14" /><path d="M9 11l3 3L22 4" /></svg>
 {:else if name === 'architecture'}

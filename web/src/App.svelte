@@ -60,6 +60,9 @@
   import DashboardPanel from './components/DashboardPanel.svelte';
   import ArchitecturePanel from './components/ArchitecturePanel.svelte';
   import DataModelPanel from './components/DataModelPanel.svelte';
+  import JobMonitor from './components/JobMonitor.svelte';
+  import JobSubmit from './components/JobSubmit.svelte';
+  import ProposalReview from './components/ProposalReview.svelte';
   import CodeAnalysisPanel from './components/CodeAnalysisPanel.svelte';
   import HelpPanel from './components/HelpPanel.svelte';
   import CreditsModal from './components/CreditsModal.svelte';
@@ -467,6 +470,44 @@
       /* badge is best-effort */
     }
   }
+  // The job monitor is a main view, not a settings tab: watching a 40-minute
+  // decomposition is not configuration.
+  let jobsOpen = $state(false);
+  function toggleJobs() { jobsOpen = !jobsOpen; }
+  // Starting a job is a separate act from watching one, so it is a separate
+  // window: the panel is glanced at constantly, the dialog is used rarely.
+  let submitOpen = $state(false);
+  /** Pre-selects the document when the dialog is opened from a card, so the
+   *  gesture finishes where it started rather than making you find the thing
+   *  you just dropped in a picker. */
+  let submitPrefill = $state<Record<string, string>>({});
+  let reviewJobId = $state<string | null>(null);
+  let jobsReload = $state(0);
+
+  // A running count on the nav button, so a 40-minute decomposition is visible
+  // without opening anything. Closed-by-default only works if something tells
+  // you there is work to look at; otherwise a job runs for an hour with no
+  // indication anywhere until you happen to go looking.
+  //
+  // Paused counts too: a run someone stopped and expects back is exactly the
+  // thing that gets forgotten.
+  let jobsRunningCount = $state(0);
+
+  async function refreshJobsCount() {
+    if (!activeProjectId) {
+      jobsRunningCount = 0;
+      return;
+    }
+    try {
+      const js = await api.listJobs(activeProjectId, undefined, 100);
+      jobsRunningCount = (js ?? []).filter(
+        (j) => j.status === 'running' || j.status === 'paused',
+      ).length;
+    } catch {
+      /* badge is best-effort — a failed count must not break the shell */
+    }
+  }
+
   let architectureOpen = $state(false);
   function toggleArchitecture() { architectureOpen = !architectureOpen; }
   function closeArchitecture() { architectureOpen = false; }
@@ -561,6 +602,7 @@
   // The dock (item cards kept beside the code you followed a link into) sits on
   // the far right — opposite the code window.
   const DOCK_WIDTH = 280;
+  const JOBS_WIDTH = 420;
   const dockOpen = $derived(dock.items.length > 0);
   // Order left→right: drawer │ code │ dock │ canvas(1fr). The dock sits right
   // of the code window and left of the canvas, so the item you followed a link
@@ -571,6 +613,10 @@
     if (codeCanvasOpen) cols.push(`${codeCanvasWidth}px`, '5px');
     if (dockOpen) cols.push(`${DOCK_WIDTH}px`, '5px');
     cols.push('1fr');
+    // Jobs docks on the RIGHT of the canvas, as a real column in this grid
+    // rather than a box floating over it. It is something you glance at while
+    // working — a fixed-position overlay is a modal wearing a panel's clothes.
+    if (jobsOpen) cols.push('5px', `${JOBS_WIDTH}px`);
     return cols.join(' ');
   });
   // Follow a code link from an item detail: dock the item (keep it visible)
@@ -940,6 +986,7 @@
       }
       if (listsOpen) await loadProjectLists();
       void refreshNeedsReviewCount();
+      void refreshJobsCount();
       void refreshDrafting();
       errorMsg = '';
     } catch (e) {
@@ -1177,9 +1224,17 @@
         sse = null;
       };
     })();
+    // The badge needs its own clock. A job started from the CLI produces no app
+    // activity for forty minutes, so a count that refreshes only when something
+    // else happens would sit at zero the whole time — which is the failure this
+    // badge exists to prevent. Fifteen seconds: a job changes state every few
+    // minutes, so anything faster is wasted requests.
+    const jobsBadgeTimer = setInterval(() => void refreshJobsCount(), 15000);
+
     return () => {
       if (timer) clearInterval(timer);
       if (debounceTimer) clearTimeout(debounceTimer);
+      clearInterval(jobsBadgeTimer);
       cleanupSSE?.();
     };
   });
@@ -1327,6 +1382,17 @@
       >
         <span class="btn-ico" style="--sig:#22c55e"><Icon name="check" size={15} /></span><span class="btn-lbl">Needs review</span>
         {#if needsReviewCount > 0}<span class="badge">{needsReviewCount}</span>{/if}
+      </button>
+      <button
+        class="lists-btn"
+        class:on={jobsOpen}
+        onclick={toggleJobs}
+        title="Jobs — what is running, on which model, and how far along"
+        aria-label="Toggle job monitor"
+        aria-pressed={jobsOpen}
+      >
+        <span class="btn-ico" style="--sig:#38bdf8"><Icon name="jobs" size={15} /></span><span class="btn-lbl">Jobs</span>
+        {#if jobsRunningCount > 0}<span class="badge">{jobsRunningCount}</span>{/if}
       </button>
       <button
         class="lists-btn"
@@ -1532,8 +1598,24 @@
         onCardAnchorClick={openCardAnchor}
         onCardAnchorHover={(a) => (hoveredCardAnchor = a)}
         onOpenSimilar={openSimilarItem}
+        onDecompose={(item) => {
+          submitPrefill = { source_item: item.id };
+          submitOpen = true;
+        }}
       />
     </section>
+    {#if jobsOpen}
+      <div class="resize-handle-static" aria-hidden="true"></div>
+      <aside class="jobs-aside">
+        <JobMonitor
+          projectId={activeProjectId}
+          onClose={toggleJobs}
+          onNewJob={() => (submitOpen = true)}
+          onReview={(id) => (reviewJobId = id)}
+          reloadKey={jobsReload}
+        />
+      </aside>
+    {/if}
   </div>
 
   <!-- Detail modals — owned by App so the code canvas can open them too. -->
@@ -1617,6 +1699,27 @@
     projectName={activeProject?.name ?? ''}
     onClose={() => (needsReviewOpen = false)}
     onChanged={() => { void refreshNeedsReviewCount(); scheduleRefresh(); }}
+  />
+
+  <JobSubmit
+    projectId={activeProjectId}
+    open={submitOpen}
+    initialWorkflow={Object.keys(submitPrefill).length ? 'decompose' : undefined}
+    prefill={submitPrefill}
+    onClose={() => { submitOpen = false; submitPrefill = {}; }}
+    onSubmitted={() => {
+      // Open the panel on submit: the run has to be visible somewhere, and
+      // starting one only to have nothing change is how a button looks broken.
+      jobsOpen = true;
+      jobsReload += 1;
+    }}
+  />
+
+  <ProposalReview
+    jobId={reviewJobId}
+    projectId={activeProjectId}
+    onClose={() => (reviewJobId = null)}
+    onApplied={() => { void refresh(); void loadProjectLists(); }}
   />
 
   <ArchitecturePanel
@@ -1838,6 +1941,13 @@
   .drawer-aside,
   .code-aside {
     border-right: 1px solid var(--p-333333);
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .jobs-aside {
+    border-left: 1px solid var(--p-333333);
     min-height: 0;
     overflow: hidden;
     display: flex;

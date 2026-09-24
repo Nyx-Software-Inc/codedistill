@@ -82,6 +82,10 @@ func main() {
 	modelAPI := flag.String("model-api", string(ollama.ProtocolOllama), "model server wire API: ollama | openai (openai = self-hosted OpenAI-compatible endpoint, e.g. vLLM/LM Studio — local-only, no cloud)")
 	content := flag.String("content", "", "content to classify (used by 'classify')")
 	override := flag.String("override", "", "optional Classification_Override for 'classify': "+domain.ClassificationOverrideList())
+	distillFile := flag.String("file", "", "document to decompose (used by 'distill')")
+	distillScratchpad := flag.String("scratchpad", "", "scratchpad the document and its items land in (used by 'distill')")
+	distillAccept := flag.Bool("accept", false, "accept every proposal, creating real items (used by 'distill')")
+	distillAgain := flag.Bool("again", false, "decompose even if this exact document was already read (used by 'distill')")
 	addr := flag.String("addr", "127.0.0.1:8080", "HTTP listen address (used by 'serve'). Defaults to localhost; binding a public interface requires write-auth (and you should add TLS).")
 	appWindow := flag.String("app", "auto", "desktop app window for 'serve': auto|on|off. Opens the UI in a Chromium-family app window whose lifetime is tied to the server (close the window -> server stops; stop the server -> window closes). auto = on for interactive desktop sessions only, so services/headless never open windows.")
 	noAuth := flag.Bool("no-auth", false, "disable the API write-auth token gate (DANGEROUS — trusted localhost only; refused on a public bind)")
@@ -115,6 +119,13 @@ data:
   restore <file>   replace the database with a snapshot (requires -force)
   reset            DELETE the database and start fresh (requires -force;
                    refuses if multi-user signals are detected)
+
+documents:
+  scratchpads      list projects and scratchpad ids (what -scratchpad wants)
+  distill          decompose -file <doc.md> into proposed work items; prints
+                   what it found and what it could not find. Add -accept to
+                   create them, -scratchpad to choose where, -again to re-read
+                   a document already decomposed. Reads .md/.txt/.odt/.docx.
 
 maintenance:
   embed-backfill   embed any items with missing/stale embeddings (idempotent)
@@ -205,6 +216,17 @@ examples:
 		}
 		if err := cmdClassify(dbArg, *model, *endpoint, *modelAPI, *content, *override); err != nil {
 			die("classify failed: %v", err)
+		}
+	case "scratchpads":
+		if err := cmdScratchpads(dbArg); err != nil {
+			die("scratchpads failed: %v", err)
+		}
+	case "distill":
+		if *distillFile == "" {
+			die("distill requires -file <document.md> (try: codedistill help)")
+		}
+		if err := cmdDistill(dbArg, *model, *endpoint, *modelAPI, *distillFile, *distillScratchpad, *distillAccept, *distillAgain); err != nil {
+			die("distill failed: %v", err)
 		}
 	case "serve":
 		if err := cmdServe(dbArg, *model, *endpoint, *modelAPI, *addr, *appWindow, *ollamaAutostart, *ollamaBin, *licensePath, *noAuth, *secureCookiesFlag || os.Getenv("CODEDISTILL_SECURE_COOKIES") == "1"); err != nil {
@@ -531,6 +553,17 @@ func cmdServe(dbPath, model, endpoint, modelAPI, addr, appWindow string, ollamaA
 	}
 	if err := ensureDefaults(ctx, store); err != nil {
 		return fmt.Errorf("seed defaults: %w", err)
+	}
+
+	// Jobs are persisted, so a run that was going when the process died is
+	// still marked running. Clear those to `interrupted` BEFORE anything can
+	// start a new one — otherwise a killed architecture draft holds its project
+	// forever and the panel never lets you draft again. Never fatal: failing to
+	// tidy up must not stop the server from serving.
+	if n, err := store.InterruptStaleJobs(ctx, time.Now().UTC()); err != nil {
+		slog.Warn("could not clear interrupted jobs", "err", err)
+	} else if n > 0 {
+		slog.Info("cleared jobs interrupted by a restart", "count", n)
 	}
 
 	logger := slog.Default()

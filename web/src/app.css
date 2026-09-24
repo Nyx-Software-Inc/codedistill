@@ -405,3 +405,4 @@ textarea:focus, input:focus, select:focus {
   color: var(--shiki-light);
 }
 .shiki { background-color: var(--code-bg); }
+

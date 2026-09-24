@@ -64,6 +64,9 @@
     // App handles cross-scratchpad navigation when the user clicks
     // "Open match" on a dedup banner. The pane itself just bubbles up.
     onOpenSimilar: (similarToId: string) => void;
+    /** Start a decompose on a document that is already here — the other half of
+     *  the drop gesture: drag a spec in, then act on it where it landed. */
+    onDecompose?: (item: ScratchpadItem) => void;
     // Set of scratchpad item ids whose every derived item is done.
     // ScratchpadGrid uses this to fade + strikethrough cards whose
     // downstream work is complete. Computed in App from padTodos /
@@ -103,6 +106,7 @@
     onCardAnchorClick,
     onCardAnchorHover,
     onOpenSimilar,
+    onDecompose,
     doneSourceIds,
     settingsTick = 0,
     derivedStatus,
@@ -1255,6 +1259,7 @@
         onAccept={doAccept}
         onReclassify={doReclassify}
         onOpenSimilar={onOpenSimilar}
+        {onDecompose}
         onDismissSimilar={doDismissSimilar}
         onGroupSimilar={doGroupSimilar}
         {flashItemId}

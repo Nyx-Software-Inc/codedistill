@@ -222,7 +222,7 @@ func (s *Server) pushFindingToScratchpad(ctx context.Context, f *domain.CodeFind
 	if err != nil {
 		return "", err
 	}
-	gw, gh := naturalSize(content)
+	gw, gh := domain.NaturalCardSize(content)
 	item := &domain.ScratchpadItem{
 		ID: id.New(), ScratchpadID: scratchpadID,
 		ContentType: "text", Content: content,

@@ -317,6 +317,71 @@ type Storage interface {
 	// (unresolved, not dismissed) finding with security_severity >= minScore.
 	HasOpenSecurityFinding(ctx context.Context, projectID string, minScore float64) (bool, error)
 	UpdateCodeFindingStatus(ctx context.Context, id, status, pushedItemID string, now time.Time) error
+	// Jobs — long-running work (decomposition, architecture drafting, and the
+	// agent runs to come). See internal/storage/sqlite/jobs.go.
+	CreateJob(ctx context.Context, j *domain.Job) error
+	GetJob(ctx context.Context, id string) (*domain.Job, error)
+	UpdateJobProgress(ctx context.Context, id, phase string, done, total int, at time.Time) error
+	AddJobTokens(ctx context.Context, id string, in, out int, at time.Time) error
+	FinishJob(ctx context.Context, id, status, errMsg string, at time.Time) error
+	ActiveJobFor(ctx context.Context, jobType, scopeKind, scopeID string) (*domain.Job, error)
+	LatestJobFor(ctx context.Context, jobType, scopeKind, scopeID string) (*domain.Job, error)
+	ListJobs(ctx context.Context, projectID string, statuses []string, limit int) ([]*domain.Job, error)
+	InterruptStaleJobs(ctx context.Context, at time.Time) (int, error)
+
+	// Per-phase timing: where a run spent its time, and what a phase usually
+	// costs. See internal/storage/sqlite/job_phases.go.
+	StartJobPhase(ctx context.Context, p *domain.JobPhase, at time.Time) error
+	UpdateJobPhase(ctx context.Context, jobID string, done, total, tokensIn, tokensOut int) error
+	FinishJobPhases(ctx context.Context, jobID, errMsg string, at time.Time) error
+	ListJobPhases(ctx context.Context, jobID string) ([]*domain.JobPhase, error)
+	PhaseNorms(ctx context.Context, projectID, workflowID string) ([]domain.PhaseNorm, error)
+
+	// Decomposition — a document's proposed work items, which are NOT items
+	// until a human accepts one. See internal/storage/sqlite/decompose.go.
+	SaveDecomposeRun(ctx context.Context, run *domain.DecomposeRun, props []*domain.DecomposeProposal) error
+	GetDecomposeRun(ctx context.Context, jobID string) (*domain.DecomposeRun, error)
+	FindDecomposeRuns(ctx context.Context, projectID, hash, label string) ([]*domain.DecomposeRun, error)
+	ListProposals(ctx context.Context, jobID string, statuses []string) ([]*domain.DecomposeProposal, error)
+
+	// ListDecomposeRuns is the review queue: a project's runs newest first,
+	// each with how many proposals still wait on a person.
+	ListDecomposeRuns(ctx context.Context, projectID string, limit int) ([]*domain.DecomposeRunSummary, error)
+	DecideProposal(ctx context.Context, id, status, itemID, reason, userID string, at time.Time) error
+	RejectedProposals(ctx context.Context, projectID string, limit int) ([]*domain.DecomposeProposal, error)
+
+	// Reading passes, persisted as they finish so an interrupted run resumes.
+	SaveDecomposePass(ctx context.Context, p *domain.DecomposePass, moves []*domain.DecomposeMove) error
+	CompletedPasses(ctx context.Context, projectID, sourceHash string) (map[int][]*domain.DecomposeMove, error)
+	ForgetDecomposePasses(ctx context.Context, projectID, sourceHash string) error
+
+	// Model providers and the roles that use them. A provider is a connection;
+	// a role is a job. See internal/storage/sqlite/providers.go.
+	CreateModelProvider(ctx context.Context, p *domain.ModelProvider) error
+	UpdateModelProvider(ctx context.Context, p *domain.ModelProvider) error
+	ClearProviderAPIKey(ctx context.Context, id string, at time.Time) error
+	DeleteModelProvider(ctx context.Context, id string) error
+	GetModelProvider(ctx context.Context, id string) (*domain.ModelProvider, error)
+	ListModelProviders(ctx context.Context) ([]*domain.ModelProvider, error)
+	RecordProviderHealth(ctx context.Context, id string, ok bool, errMsg string, at time.Time) error
+	SetWorkerModel(ctx context.Context, workerType, projectID, providerID string, at time.Time) error
+	ClearWorkerModel(ctx context.Context, workerType, projectID string) error
+	ResolveWorkerModel(ctx context.Context, workerType, projectID string) (*domain.ModelProvider, error)
+	ListWorkerModels(ctx context.Context, projectID string) (map[string]string, error)
+
+	// Workflows: definitions as data, so a user can eventually build their own.
+	ListWorkflows(ctx context.Context) ([]*domain.Workflow, error)
+	GetWorkflow(ctx context.Context, id string) (*domain.Workflow, error)
+	CreateWorkflow(ctx context.Context, w *domain.Workflow) error
+	DeleteWorkflow(ctx context.Context, id string) error
+	SetStepProvider(ctx context.Context, workflowID string, ordinal int, providerID string, at time.Time) error
+
+	// What a run was actually asked for, kept with the job rather than
+	// reconstructed from a definition that may since have been edited.
+	SaveJobParams(ctx context.Context, jobID string, params map[string]string) error
+	JobParams(ctx context.Context, jobID string) (map[string]string, error)
+	ResolveStepProvider(ctx context.Context, workflowID string, ordinal int, projectID string) (*domain.ModelProvider, error)
+
 	CreateAnalysisScan(ctx context.Context, sc *domain.AnalysisScan) error
 	LatestAnalysisScan(ctx context.Context, projectID string) (*domain.AnalysisScan, error)
 

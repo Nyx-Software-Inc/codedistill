@@ -17,6 +17,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"codedistill/internal/domain"
 )
 
 // These tests assume the 24-column grid (gridWidth). The geometries
@@ -86,21 +88,21 @@ func TestNaturalSize(t *testing.T) {
 		minH    int
 		maxH    int
 	}{
-		{"tiny note", "fix the thing", minNaturalW * scale, minNaturalH, 3},
-		{"few short lines", "a\nb\nc\nd", minNaturalW * scale, 2, 4},
-		{"paragraph wraps narrow", strings.Repeat("word ", 40), minNaturalW * scale, 4, maxNaturalH},
-		{"medium paste goes wider", strings.Repeat("lorem ipsum dolor sit amet ", 22), 6 * scale, 4, maxNaturalH},
-		{"huge paste caps out", strings.Repeat("x", 4000), gridWidth, maxNaturalH, maxClampH},
+		{"tiny note", "fix the thing", domain.MinNaturalW * scale, domain.MinNaturalH, 3},
+		{"few short lines", "a\nb\nc\nd", domain.MinNaturalW * scale, 2, 4},
+		{"paragraph wraps narrow", strings.Repeat("word ", 40), domain.MinNaturalW * scale, 4, domain.MaxNaturalH},
+		{"medium paste goes wider", strings.Repeat("lorem ipsum dolor sit amet ", 22), 6 * scale, 4, domain.MaxNaturalH},
+		{"huge paste caps out", strings.Repeat("x", 4000), gridWidth, domain.MaxNaturalH, domain.MaxClampH},
 	}
 	for _, tc := range cases {
-		w, h := naturalSize(tc.content)
+		w, h := domain.NaturalCardSize(tc.content)
 		if w != tc.wantW {
 			t.Errorf("%s: w = %d, want %d", tc.name, w, tc.wantW)
 		}
 		if h < tc.minH || h > tc.maxH {
 			t.Errorf("%s: h = %d, want %d..%d", tc.name, h, tc.minH, tc.maxH)
 		}
-		if w < minNaturalW || w > gridWidth || h < minNaturalH || h > maxClampH {
+		if w < domain.MinNaturalW || w > gridWidth || h < domain.MinNaturalH || h > domain.MaxClampH {
 			t.Errorf("%s: (%d,%d) outside clamps", tc.name, w, h)
 		}
 	}

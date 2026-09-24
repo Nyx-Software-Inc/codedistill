@@ -43,23 +43,53 @@ const (
 type Protocol string
 
 const (
-	ProtocolOllama Protocol = "ollama"
-	ProtocolOpenAI Protocol = "openai"
+	ProtocolOllama    Protocol = "ollama"
+	ProtocolOpenAI    Protocol = "openai"
+	ProtocolAnthropic Protocol = "anthropic"
+	ProtocolGemini    Protocol = "gemini"
+	ProtocolBedrock   Protocol = "bedrock"
+	ProtocolAzure     Protocol = "azure"
 )
 
 // ParseProtocol normalizes a string to a Protocol, defaulting to Ollama.
+//
+// Defaulting rather than erroring on an unknown value is deliberate: this is
+// read from configuration, and a typo should land on the local model rather
+// than take the process down.
 func ParseProtocol(s string) Protocol {
-	if Protocol(s) == ProtocolOpenAI {
+	switch Protocol(s) {
+	case ProtocolOpenAI:
 		return ProtocolOpenAI
+	case ProtocolAnthropic:
+		return ProtocolAnthropic
+	case ProtocolGemini:
+		return ProtocolGemini
+	case ProtocolBedrock:
+		return ProtocolBedrock
+	case ProtocolAzure:
+		return ProtocolAzure
 	}
 	return ProtocolOllama
 }
+
+// WithAPIKey sets the credential. Sent as Authorization: Bearer for OpenAI,
+// x-api-key for Anthropic, x-goog-api-key for Gemini — three different headers,
+// which is most of why these cannot share one adapter.
+func WithAPIKey(k string) Option { return func(c *Client) { c.apiKey = k } }
 
 type Client struct {
 	endpoint string
 	model    string
 	proto    Protocol
 	http     *http.Client
+	numCtx   int // 0 = leave to the server default (4096, and it truncates)
+	// apiKey carries whatever the protocol authenticates with: a bearer token,
+	// an x-api-key, an x-goog-api-key — or, for Bedrock, a JSON object holding
+	// an AWS access key id, secret and optional session token. Packed into the
+	// one field because it is the one that is encrypted at rest and never
+	// returned by the API; half a credential in a plaintext column would sit
+	// outside that guarantee.
+	apiKey string
 }
 
 type Option func(*Client)
@@ -67,6 +97,20 @@ type Option func(*Client)
 func WithEndpoint(e string) Option         { return func(c *Client) { c.endpoint = e } }
 func WithModel(m string) Option            { return func(c *Client) { c.model = m } }
 func WithHTTPClient(h *http.Client) Option { return func(c *Client) { c.http = h } }
+
+// WithContextTokens sets num_ctx — how much of a prompt the model is allowed to
+// see.
+//
+// This is not a tuning knob, it is a correctness setting. Ollama's default is
+// 4096 REGARDLESS of what the model supports (qwen2.5:7b holds 32768), and it
+// does not error when a prompt exceeds it: it silently truncates from the
+// front and answers from what is left. Measured: a 7,116-token prompt was
+// accepted, reported prompt_eval_count of exactly 4096, and came back with
+// invented role names — because the instructions at the top had been cut away
+// and only the data at the bottom survived.
+//
+// Any caller sending more than ~4k tokens must set this or be quietly lied to.
+func WithContextTokens(n int) Option { return func(c *Client) { c.numCtx = n } }
 
 // WithProtocol selects the wire API (ProtocolOllama default, or ProtocolOpenAI
 // for a self-hosted OpenAI-compatible server).
@@ -87,13 +131,40 @@ func New(opts ...Option) *Client {
 
 func (c *Client) Model() string { return c.model }
 
+// options builds the per-request option map, carrying num_ctx when the caller
+// asked for one. Omitted otherwise, so existing behaviour is unchanged for
+// callers whose prompts already fit.
+func (c *Client) options() map[string]interface{} {
+	o := map[string]interface{}{"temperature": 0.0}
+	if c.numCtx > 0 {
+		o["num_ctx"] = c.numCtx
+	}
+	return o
+}
+
 // Reachable reports whether the model server is responding (a quick GET to
 // /api/tags). Used by the classifier reconciliation sweep to avoid re-enqueueing
 // work while Ollama is down (e.g. laptop suspended). Uses a short timeout so a
 // dead endpoint doesn't hang the sweep.
+// Reachable reports whether the model server will actually ANSWER.
+//
+// It used to call GET /api/tags and return true on 200. That endpoint is served
+// from metadata and stays green when inference is dead — observed twice in one
+// day after a laptop suspend, where /api/tags answered in 1ms while
+// /api/generate never returned. A health check that passes while the thing it
+// guards is broken is worse than no health check: the agent's reconcile sweep
+// sees a healthy model, queues work, and every item hangs until it times out.
+//
+// So it exercises generation, with the smallest prompt that proves the path
+// works end to end. Bounded tightly: a health check that can itself hang is the
+// same bug one level up.
 func (c *Client) Reachable(ctx context.Context) bool {
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, healthTimeout)
 	defer cancel()
+
+	// Still check the cheap endpoint first. A server that is genuinely down
+	// fails here in milliseconds, and there is no reason to make the common
+	// case pay for a generation.
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint+"/api/tags", nil)
 	if err != nil {
 		return false
@@ -102,7 +173,43 @@ func (c *Client) Reachable(ctx context.Context) bool {
 	if err != nil {
 		return false
 	}
-	_ = resp.Body.Close()
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	return c.canGenerate(ctx)
+}
+
+// healthTimeout bounds the probe. Generous enough for a cold model load (which
+// takes seconds, not minutes) and far short of any real call's deadline.
+const healthTimeout = 45 * time.Second
+
+// canGenerate asks for one token. num_predict caps the answer so the probe
+// costs a load and a single step rather than a full response.
+func (c *Client) canGenerate(ctx context.Context) bool {
+	body, err := json.Marshal(generateRequest{
+		Model:  c.model,
+		Prompt: "ok",
+		Stream: false,
+		Options: map[string]interface{}{
+			"temperature": 0.0,
+			"num_predict": 1,
+		},
+	})
+	if err != nil {
+		return false
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint+"/api/generate", bytes.NewReader(body))
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return false // includes the deadline expiring, which is the wedged case
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
 	return resp.StatusCode == http.StatusOK
 }
 
@@ -133,17 +240,24 @@ func (c *Client) GenerateJSONWithModel(ctx context.Context, model, prompt string
 	if model == "" {
 		model = c.model
 	}
-	if c.proto == ProtocolOpenAI {
+	switch c.proto {
+	case ProtocolOpenAI:
 		return c.generateJSONOpenAI(ctx, model, prompt)
+	case ProtocolAnthropic:
+		return c.generateJSONAnthropic(ctx, model, prompt)
+	case ProtocolGemini:
+		return c.generateJSONGemini(ctx, model, prompt)
+	case ProtocolBedrock:
+		return c.generateJSONBedrock(ctx, model, prompt)
+	case ProtocolAzure:
+		return c.generateJSONAzure(ctx, model, prompt)
 	}
 	body, err := json.Marshal(generateRequest{
-		Model:  model,
-		Prompt: prompt,
-		Format: "json",
-		Stream: false,
-		Options: map[string]interface{}{
-			"temperature": 0.0,
-		},
+		Model:   model,
+		Prompt:  prompt,
+		Format:  "json",
+		Stream:  false,
+		Options: c.options(),
 	})
 	if err != nil {
 		return "", err
@@ -198,6 +312,32 @@ type chatResponse struct {
 // endpoint (POST {endpoint}/v1/chat/completions). response_format json_object
 // asks the server for strict JSON (vLLM/LM Studio honor it; servers that don't
 // still return the JSON the prompt asks for).
+// setAuth puts the credential where the protocol expects it.
+//
+// This did not exist, and the OpenAI path set no auth header at all — so every
+// HOSTED OpenAI-compatible provider (OpenAI itself, OpenRouter, Groq, Together)
+// would have answered 401 at the first call. It went unnoticed because the
+// vendors people actually ran locally, LM Studio and vLLM, need no key.
+//
+// One function rather than a line per call site: the next adapter that forgets
+// is the same bug again.
+func (c *Client) setAuth(req *http.Request) {
+	if c.apiKey == "" {
+		return
+	}
+	switch c.proto {
+	case ProtocolAzure:
+		// api-key, NOT Authorization: Bearer. Azure rejects the bearer form.
+		req.Header.Set("api-key", c.apiKey)
+	case ProtocolAnthropic:
+		req.Header.Set("x-api-key", c.apiKey)
+	case ProtocolGemini:
+		req.Header.Set("x-goog-api-key", c.apiKey)
+	default:
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+}
+
 func (c *Client) generateJSONOpenAI(ctx context.Context, model, prompt string) (string, error) {
 	body, err := json.Marshal(chatRequest{
 		Model:          model,
@@ -214,6 +354,7 @@ func (c *Client) generateJSONOpenAI(ctx context.Context, model, prompt string) (
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	c.setAuth(req)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("openai generate: %w", err)
@@ -246,6 +387,7 @@ func (c *Client) listModelsOpenAI(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	c.setAuth(req)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("openai models: %w", err)
@@ -314,12 +456,10 @@ func (c *Client) ListModels(ctx context.Context) ([]string, error) {
 // retrievals.
 func (c *Client) Generate(ctx context.Context, prompt string) (string, error) {
 	body, err := json.Marshal(generateRequest{
-		Model:  c.model,
-		Prompt: prompt,
-		Stream: false,
-		Options: map[string]interface{}{
-			"temperature": 0.0,
-		},
+		Model:   c.model,
+		Prompt:  prompt,
+		Stream:  false,
+		Options: c.options(),
 	})
 	if err != nil {
 		return "", err

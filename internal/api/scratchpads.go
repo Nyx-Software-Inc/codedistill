@@ -17,7 +17,6 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
-	"strings"
 	"time"
 
 	"codedistill/internal/domain"
@@ -144,21 +143,6 @@ func (s *Server) deleteScratchpad(w http.ResponseWriter, r *http.Request) {
 // pack into the left half of the canvas (CodeDestill_imports bug #2).
 const gridWidth = 24
 
-// Content-size estimator tuning (fit-to-content restack + creation-time
-// natural sizing). The numbers approximate the canvas card renderer:
-// ~9 characters per grid column, ~2 text lines per grid row, one row of
-// card chrome (title bar + padding). Estimates err small-and-resizable
-// rather than precise — the user can always nudge a card.
-const (
-	charsPerCol = 9
-	linesPerRow = 2
-	chromeRows  = 1
-	minNaturalW = 4
-	minNaturalH = 2
-	maxNaturalH = 8  // beyond this, widen instead of growing taller
-	maxClampH   = 10 // absolute height cap even at full width
-)
-
 // restackReq is the optional POST body for restack.
 //
 // mode: "tidy" (default — keep sizes, close gaps), "fit" (recompute
@@ -177,44 +161,6 @@ type restackReq struct {
 // length.
 func textualContentType(ct string) bool {
 	return ct == "text" || ct == "code_snippet" || ct == "link"
-}
-
-// naturalSize estimates a card's grid size from its text content.
-// Prefers narrow-and-tall (board-like) over full-width: tries widths
-// narrowest-first and takes the first whose wrapped height fits
-// maxNaturalH. Only truly long content goes full-width.
-func naturalSize(content string) (w, h int) {
-	lines := strings.Split(content, "\n")
-	heightAt := func(w int) int {
-		wrapped := 0
-		for _, l := range lines {
-			n := (len(l) + w*charsPerCol - 1) / (w * charsPerCol)
-			if n < 1 {
-				n = 1
-			}
-			wrapped += n
-		}
-		h := (wrapped+linesPerRow-1)/linesPerRow + chromeRows
-		if h < minNaturalH {
-			h = minNaturalH
-		}
-		return h
-	}
-	// Estimate width in a 12-column basis (the tuning constants above are
-	// calibrated for it), then scale the chosen width up to the actual
-	// gridWidth so proportions are preserved on the 24-column canvas.
-	// Height is unaffected by the scale.
-	const baseCols = 12
-	scale := gridWidth / baseCols
-	for _, w := range []int{minNaturalW, 6, 8, baseCols} {
-		if h := heightAt(w); h <= maxNaturalH || w == baseCols {
-			if h > maxClampH {
-				h = maxClampH
-			}
-			return w * scale, h
-		}
-	}
-	return gridWidth, maxClampH // unreachable; loop always returns
 }
 
 // restackScratchpad rewrites every item's (grid_col, grid_row) — and,
@@ -287,7 +233,7 @@ func (s *Server) restackScratchpad(w http.ResponseWriter, r *http.Request) {
 		case it.ContentType == "group":
 			// never resized
 		case mode == "fit" && textualContentType(it.ContentType):
-			t.w, t.h = naturalSize(it.Content)
+			t.w, t.h = domain.NaturalCardSize(it.Content)
 			t.resized = true
 		case colWidths[mode] > 0:
 			t.w = colWidths[mode]

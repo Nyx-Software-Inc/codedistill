@@ -30,6 +30,9 @@
     onMoveItem: (item: ScratchpadItem) => void;
     // Re-enqueue a stuck capture (unprocessed/failed) for classification.
     onReprocess: (item: ScratchpadItem) => void;
+    /** Offered only on items the document reader can actually read — a button
+     *  that fails after you press it is worse than no button. */
+    onDecompose?: (item: ScratchpadItem) => void;
     // Triggered from the in-card pending-review banner. The agent's
     // proposed_category is offered as the headline Accept option; the
     // dropdown lets the user reclassify to any of the other categories.
@@ -96,7 +99,7 @@
     tagsBySource?: Map<string, string[]>;
   };
   let {
-    items, onLayoutChange, onDelete, onHide, onEdit, onMoveItem, onReprocess,
+    items, onLayoutChange, onDelete, onHide, onEdit, onMoveItem, onReprocess, onDecompose,
     onAccept, onReclassify, onOpenSimilar, onDismissSimilar, onGroupSimilar,
     flashItemId = null, itemAnchors = {}, onAnchorBadge, onAnchorBadgeHover,
     doneSourceIds,
@@ -362,6 +365,48 @@
 
   // Pending-review banner state — open dropdown id (one at a time).
   let openReclassifyFor = $state<string | null>(null);
+  let savingBlob = $state<string | null>(null);
+
+  /** Downloads through fetch rather than by following a link.
+   *
+   *  serve opens the UI as a Chromium --app window, which has no browser chrome
+   *  at all — no tab bar, no download bubble. A `download` link there makes
+   *  Chrome spawn a second app-mode popup to handle the navigation, which draws
+   *  as a tiny half-rendered frame in the corner and then vanishes. The file
+   *  did arrive; nothing on screen said so. Fetching the bytes and handing them
+   *  to a synthesized anchor avoids the navigation, so there is no popup and the
+   *  button can say what it is doing. */
+  async function saveBlob(item: ScratchpadItem) {
+    if (!item.blob_sha) return;
+    savingBlob = item.id;
+    try {
+      const res = await fetch(`/api/v1/blobs/${item.blob_sha}`);
+      if (!res.ok) throw new Error(String(res.status));
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = item.file_name || 'download';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      // Revoked on a later tick: revoking synchronously races the click in
+      // some builds and yields a zero-byte file.
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } finally {
+      savingBlob = null;
+    }
+  }
+
+  /** Mirrors the submission dialog's filter: an uploaded file the reader
+   *  supports, or a text item long enough to be a specification rather than a
+   *  note. A .pdf is a file too and decomposing one is refused, so it is not
+   *  offered. */
+  function looksLikeDocument(item: ScratchpadItem): boolean {
+    const name = item.file_name || item.name || '';
+    if (item.blob_sha) return /\.(md|txt|odt|docx)$/i.test(name);
+    return (item.content ?? '').length > 400;
+  }
   function pickCat(c: string): 'todo' | 'bug' | 'kb' | 'use_case' | '' {
     return c === 'todo' || c === 'bug' || c === 'kb' || c === 'use_case' ? c : '';
   }
@@ -1036,6 +1081,15 @@
             ><Icon name="anchor" size={12} />{#if fa.provenance === 'agent-suggested'}<span class="prov-suffix" aria-hidden="true">?</span>{/if}</button>
           {/if}
         {/each}
+        {#if onDecompose && looksLikeDocument(item)}
+          <button
+            class="icon-btn decompose"
+            data-grid-nodrag
+            onclick={(e) => { e.stopPropagation(); onDecompose(item); }}
+            title="Decompose — read this document and derive the work it implies"
+            aria-label="Decompose"
+          ><Icon name="jobs" size={12} /></button>
+        {/if}
         {#if item.classification_state === 'unprocessed' || item.classification_state === 'failed'}
           <button
             class="icon-btn reprocess"
@@ -1247,13 +1301,26 @@
               <div class="file-name" title={item.file_name}>{item.file_name || '(unnamed file)'}</div>
               <div class="file-size">{formatBytes(item.byte_size ?? 0)}{item.mime_type ? ' · ' + item.mime_type : ''}</div>
             </div>
-            <a
-              class="file-download"
-              href="/api/v1/blobs/{item.blob_sha}"
-              download={item.file_name || ''}
+            <!-- Decompose is the PRIMARY action on a document. Download was
+                 here alone, which is backwards: you dragged the file in from
+                 your own disk, so you already have it. Download earns its place
+                 for a document someone else dropped, or one on a hosted
+                 install, or as the exact bytes that were read — secondary in
+                 every case. -->
+            {#if onDecompose && looksLikeDocument(item)}
+              <button
+                class="file-action primary"
+                data-grid-nodrag
+                title="Read this document and derive the use cases, todos and bugs it implies"
+                onclick={(e) => { e.stopPropagation(); onDecompose(item); }}
+              >Decompose</button>
+            {/if}
+            <button
+              class="file-action"
+              data-grid-nodrag
               title="Download {item.file_name || 'file'}"
-              onclick={(e) => e.stopPropagation()}
-            >Download</a>
+              onclick={(e) => { e.stopPropagation(); void saveBlob(item); }}
+            >{savingBlob === item.id ? 'Saving…' : 'Download'}</button>
           </div>
         {:else}
           <pre>{item.content}</pre>
@@ -1787,17 +1854,24 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .file-download {
+  .file-action {
     flex-shrink: 0;
     padding: 4px 10px;
     font-size: 11px;
+    font-family: inherit;
+    cursor: pointer;
     color: var(--p-99ccff);
     background: var(--p-1a2530);
     border: 1px solid var(--p-2d5578);
     border-radius: 3px;
-    text-decoration: none;
   }
-  .file-download:hover { background: var(--p-2d5578); color: var(--p-cceeff); }
+  .file-action:hover { background: var(--p-2d5578); color: var(--p-cceeff); }
+  .file-action.primary {
+    color: #fff;
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+  .file-action.primary:hover { filter: brightness(1.12); }
   .sketch-card {
     display: flex;
     align-items: center;
