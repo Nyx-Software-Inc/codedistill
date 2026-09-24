@@ -79,3 +79,8 @@ claim-code
 /dist/
 /activationd
 /slavko/
+
+# A scratch directory created inside the repo by a test run that used a
+# relative path. It got committed once; root-anchored so it cannot match a
+# legitimate tmp/ deeper in the tree.
+/tmp/
