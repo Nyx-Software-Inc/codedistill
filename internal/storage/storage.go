@@ -347,6 +347,14 @@ type Storage interface {
 	// ListDecomposeRuns is the review queue: a project's runs newest first,
 	// each with how many proposals still wait on a person.
 	ListDecomposeRuns(ctx context.Context, projectID string, limit int) ([]*domain.DecomposeRunSummary, error)
+
+	// Dependencies: what has to happen before what. Edges cross item kinds, so
+	// they are stored once rather than per table.
+	CreateDependency(ctx context.Context, d *domain.ItemDependency) error
+	DeleteDependency(ctx context.Context, id string) error
+	ListDependencies(ctx context.Context, projectID string) ([]*domain.ItemDependency, error)
+	SetDependencyStatus(ctx context.Context, id, status string) error
+	KnownEdge(ctx context.Context, projectID, fromID, toID string) (bool, error)
 	DecideProposal(ctx context.Context, id, status, itemID, reason, userID string, at time.Time) error
 	RejectedProposals(ctx context.Context, projectID string, limit int) ([]*domain.DecomposeProposal, error)
 

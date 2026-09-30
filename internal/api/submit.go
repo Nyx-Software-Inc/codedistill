@@ -91,6 +91,8 @@ func (s *Server) submitJob(w http.ResponseWriter, r *http.Request) {
 	switch wf.ID {
 	case domain.JobDecompose:
 		s.submitDecompose(w, r, req.ProjectID, params)
+	case domain.JobSequence:
+		s.submitSequence(w, r, req.ProjectID, params)
 	case domain.JobArchDraft:
 		// Architecture drafting owns its own launch path: it derives its work
 		// from the repository tree, which has to be walked before there is
@@ -281,6 +283,77 @@ func (s *Server) documentFromItem(ctx context.Context, item *domain.ScratchpadIt
 	}
 	src, err := decompose.ReadDocumentBytes(label, raw)
 	return src, label, err
+}
+
+// submitSequence orders the work on a scratchpad.
+//
+// Reads all four kinds together rather than one at a time: dependencies cross
+// kinds, and a bug blocking a use case is exactly the edge a per-kind sweep
+// could never see.
+func (s *Server) submitSequence(w http.ResponseWriter, r *http.Request, projectID string, params map[string]string) {
+	spID := params["scratchpad"]
+	sp, err := s.store.GetScratchpad(r.Context(), spID)
+	if err != nil || sp == nil {
+		writeJSON(w, http.StatusBadRequest,
+			map[string]any{"error": "that scratchpad no longer exists", "field": "scratchpad"})
+		return
+	}
+
+	useCases, _ := s.store.ListUseCaseItemsByScratchpad(r.Context(), spID)
+	todos, _ := s.store.ListTodoItemsByScratchpad(r.Context(), spID)
+	bugs, _ := s.store.ListBugItemsByScratchpad(r.Context(), spID)
+
+	items, kinds := jobrun.SeqItemsFrom(useCases, todos, bugs)
+	if len(items) < 2 {
+		// Refused here rather than started and finished instantly: a job that
+		// succeeds having done nothing is worse than a message saying why.
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "there is nothing to order — this scratchpad holds fewer than two work items",
+			"field": "scratchpad",
+		})
+		return
+	}
+
+	gen, prov, err := StepClient(r.Context(), s.store, domain.JobSequence, 0,
+		domain.WorkerDecomposer, projectID, decompose.MaxCallTimeout+time.Minute)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if gen == nil {
+		writeMsg(w, http.StatusConflict,
+			"no model is configured for this workflow — choose one in Settings › Workflows")
+		return
+	}
+
+	jobID := id.New()
+	runCtx, cancel := context.WithCancel(context.Background())
+	s.trackJob(jobID, cancel)
+
+	go func() {
+		defer s.untrackJob(jobID)
+		res, err := jobrun.RunSequence(runCtx, s.store, jobrun.SequenceInput{
+			ProjectID: projectID, ScopeKind: "scratchpad", ScopeID: spID,
+			ScopeLabel: sp.Name, Items: items, Kinds: kinds,
+			Gen: gen, JobID: jobID, NewID: id.New, UserID: s.currentUser(r),
+		})
+		if err != nil {
+			s.log.Warn("sequence run failed", "job", jobID, "err", err)
+			return
+		}
+		// Logged, because the discarded counts are the honest measure of the
+		// sweep: edges naming items that do not exist say the model is not to
+		// be trusted, and "2 proposed" alone hides that entirely.
+		s.log.Info("sequence complete", "job", jobID, "items", len(items),
+			"proposed", res.Proposed, "discarded", res.Rejected, "already_known", res.Known)
+	}()
+
+	resp := map[string]any{"job_id": jobID, "items": len(items), "model": gen.Model()}
+	if prov != nil {
+		resp["provider"] = prov.Name
+		resp["leaves_machine"] = !prov.IsLocal
+	}
+	writeJSON(w, http.StatusAccepted, resp)
 }
 
 // Running jobs this server owns, so Cancel can actually stop one.

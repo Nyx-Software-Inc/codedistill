@@ -14,6 +14,8 @@
 package api
 
 import (
+	"codedistill/internal/features"
+	"codedistill/internal/licensing"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -24,6 +26,14 @@ import (
 // git-repo flagging, dot-dir skipping, parent computation, and the
 // error statuses for relative / missing / non-dir paths.
 func TestFsBrowse(t *testing.T) {
+	// Pinned to SINGLE-USER. This package's default test state has every
+	// feature on (see governance_test.go), and fs_browse is now refused
+	// outright when multiuser is enabled — which is the point of the gate.
+	// This test is about the desktop install, where the picker must work.
+	orig := features.LicenseStatus()
+	t.Cleanup(func() { features.Init(orig) })
+	features.Init(licensing.None("single-user desktop"))
+
 	srv, _ := setup(t)
 	root := t.TempDir()
 

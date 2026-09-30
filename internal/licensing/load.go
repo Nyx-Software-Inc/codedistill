@@ -100,10 +100,19 @@ func Load(flagPath, dbPath, version string) *Status {
 	return VerifyAny(raw, PublicKeys(), time.Now().UTC(), fp, version)
 }
 
-// PublicKey returns the embedded MASTER license-signing public key.
-func PublicKey() ed25519.PublicKey {
-	return ed25519.PublicKey(embeddedPublicKey[:])
-}
+// Deliberately NOT offering a single-key accessor.
+//
+// There used to be a PublicKey() returning only the MASTER key, beside
+// PublicKeys() returning the whole trust list. `license install` called the
+// first, so every legitimately purchased self-serve licence — signed by the
+// ACTIVATION key — was refused at install while working fine under serve. A
+// customer who had paid could not install what they bought.
+//
+// That was fixed by routing install through VerifyAny(PublicKeys()), and the
+// accessor is gone rather than left dead: its only purpose was to return half
+// the trust list, sitting in this file next to the correct one, where the next
+// person needing a public key had even odds of picking the one that rejects
+// paying customers.
 
 // PublicKeys returns the full trust list: the offline master key plus the
 // activation service's self-serve key (dual-key model — see pubkey.go).

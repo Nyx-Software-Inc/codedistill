@@ -151,9 +151,10 @@ func VerifyAny(raw []byte, pubs []ed25519.PublicKey, now time.Time, fingerprint,
 	for _, pub := range pubs {
 		last = Verify(raw, pub, now, fingerprint, version)
 		if !(last.State == StateInvalid && last.Reason == reasonBadSignature) {
-			if pub.Equal(selfServeKey) &&
-				last.License != nil && last.License.Edition != "pro" {
-				return invalid("self-serve licenses are pro-only (edition " + last.License.Edition + " requires a master-signed license)")
+			if pub.Equal(selfServeKey) && last.License != nil {
+				if bad := selfServeOverreach(last.License); bad != "" {
+					return invalid(bad)
+				}
 			}
 			return last
 		}
@@ -164,6 +165,79 @@ func VerifyAny(raw []byte, pubs []ed25519.PublicKey, now time.Time, fingerprint,
 // Sign produces the on-disk license file bytes for a payload. Lives
 // here (not in licensegen) so tests can round-trip with a throwaway
 // key; the production private key only ever touches licensegen.
+// selfServeSeatCap bounds what the ONLINE key may grant.
+//
+// Fifty, revisitable. It cannot block a large deal: a big customer gets an
+// Enterprise licence hand-signed with the offline master key, which this
+// function never touches. The cap exists so a breach of the activation host —
+// which sits on the internet carrying live payment secrets — cannot mint an
+// unlimited-seat licence.
+const selfServeSeatCap = 50
+
+// selfServeOverreach reports why a licence claims more than the activation key
+// is allowed to grant, or "" when it is within bounds.
+//
+// This is the blast-radius control that pubkey.go's own comment promises: the
+// activation key is online and therefore compromisable, so it "can mint Pro" —
+// and ONLY Pro. Without this, a leaked key mints Enterprise: multiuser, S3,
+// governance, the analysis pipeline, unlimited seats. The entire paid
+// differentiation, from a host on the public internet.
+//
+// Checked against EditionFeatures, NOT a hand-written list. That map is the
+// shared source both issuance lanes already use — activation/service.go looks
+// features up in it and licensegen aliases it — precisely so the two cannot
+// drift. Comparing against anything else would risk verification becoming
+// stricter than issuance, which is how every legitimately purchased licence
+// once failed to install.
+func selfServeOverreach(l *Payload) string {
+	if l.Edition != "pro" {
+		return "self-serve licenses are pro-only (edition " + l.Edition +
+			" requires a master-signed license)"
+	}
+	allowed := map[string]bool{}
+	for _, f := range EditionFeatures["pro"] {
+		allowed[f] = true
+	}
+	for _, f := range l.Features {
+		if !allowed[f] {
+			// Named, because the two causes need different responses: an
+			// issuer bug is fixed by changing EditionFeatures, and a forged
+			// licence is an incident.
+			return "self-serve licenses cannot grant " + f +
+				" (only a master-signed license can)"
+		}
+	}
+	if l.Seats > selfServeSeatCap {
+		return "self-serve licenses are capped at " +
+			itoa(selfServeSeatCap) + " seats (this one claims " + itoa(l.Seats) +
+			"; larger deals are master-signed)"
+	}
+	return ""
+}
+
+// itoa avoids importing strconv into a file that otherwise needs no formatting.
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var b [20]byte
+	i := len(b)
+	for n > 0 {
+		i--
+		b[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		b[i] = '-'
+	}
+	return string(b[i:])
+}
+
 func Sign(p *Payload, priv ed25519.PrivateKey) ([]byte, error) {
 	body, err := json.Marshal(p)
 	if err != nil {

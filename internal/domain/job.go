@@ -42,6 +42,7 @@ const (
 const (
 	JobDecompose = "decompose"  // a document into proposed work items
 	JobArchDraft = "arch_draft" // characterise architecture components
+	JobSequence  = "sequence"   // work out what has to happen before what
 )
 
 // Job is one run of long work. It records the run, not the work: how a job

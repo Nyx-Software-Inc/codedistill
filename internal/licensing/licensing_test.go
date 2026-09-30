@@ -16,6 +16,7 @@ package licensing
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"strings"
 	"testing"
 	"time"
 )
@@ -269,5 +270,105 @@ func TestVerifyAnySelfServeProOnly(t *testing.T) {
 	// The MASTER key may still sign Enterprise — the cap is key-specific.
 	if st := VerifyAny(sign(masterPriv, "enterprise", []string{"multiuser"}), trust, now, "", "1.0.0"); st.State != StateValid {
 		t.Fatalf("master-signed Enterprise should verify: %s (%s)", st.State, st.Reason)
+	}
+}
+
+// The blast-radius control, in full: the ONLINE key may mint Pro and nothing
+// more. pubkey.go promises this in its own comment — a leaked activation key
+// "can mint Pro" — and until this test existed it could mint Enterprise
+// features under a Pro edition, because VerifyAny checked the edition and then
+// trusted the feature list verbatim.
+func TestSelfServeKeyCannotGrantEnterpriseFeaturesOrUnlimitedSeats(t *testing.T) {
+	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+	masterPub, masterPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selfPub, selfPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := selfServeKey
+	selfServeKey = selfPub
+	t.Cleanup(func() { selfServeKey = orig })
+
+	trust := []ed25519.PublicKey{masterPub, selfPub}
+	sign := func(priv ed25519.PrivateKey, p *Payload) []byte {
+		p.LicenseID, p.Customer, p.IssuedAt = "l1", "C", now
+		raw, err := Sign(p, priv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+
+	// THE case this exists for: edition says pro, features say Enterprise.
+	// Passes an edition-only check, and grants multiuser at runtime because
+	// HasFeature walks the list verbatim.
+	for _, feat := range []string{"multiuser", "s3", "governance", "analysis"} {
+		raw := sign(selfPriv, &Payload{Edition: "pro", Features: []string{"mcp", feat}})
+		st := VerifyAny(raw, trust, now, "", "1.0.0")
+		if st.State != StateInvalid {
+			t.Errorf("self-serve licence granting %q verified as %s — a leaked activation key mints Enterprise",
+				feat, st.State)
+		}
+		if !strings.Contains(st.Reason, feat) {
+			t.Errorf("rejection should name the feature, got %q", st.Reason)
+		}
+	}
+
+	// Seats beyond the cap: refused. A large deal is master-signed.
+	over := sign(selfPriv, &Payload{Edition: "pro",
+		Features: []string{"mcp"}, Seats: selfServeSeatCap + 1})
+	if st := VerifyAny(over, trust, now, "", "1.0.0"); st.State != StateInvalid {
+		t.Errorf("self-serve licence claiming %d seats verified as %s",
+			selfServeSeatCap+1, st.State)
+	}
+	// Exactly at the cap: fine. An off-by-one here refuses a legitimate buyer.
+	at := sign(selfPriv, &Payload{Edition: "pro",
+		Features: []string{"mcp"}, Seats: selfServeSeatCap})
+	if st := VerifyAny(at, trust, now, "", "1.0.0"); st.State != StateValid {
+		t.Errorf("%d seats is at the cap and must verify, got %s (%s)",
+			selfServeSeatCap, st.State, st.Reason)
+	}
+
+	// The MASTER key is unrestricted — offline, ours, and minting anything is
+	// the point of it. A mega deal is signed here, which is why capping the
+	// online key cannot block one.
+	mega := sign(masterPriv, &Payload{Edition: "enterprise",
+		Features: EditionFeatures["enterprise"], Seats: 5000})
+	if st := VerifyAny(mega, trust, now, "", "1.0.0"); st.State != StateValid {
+		t.Errorf("master-signed enterprise licence must verify: %s (%s)", st.State, st.Reason)
+	}
+}
+
+// The guard against re-creating the bug we just closed: verification must never
+// be stricter than issuance. What the activation service actually issues has to
+// verify clean, or every purchase fails at install.
+func TestWhatTheActivationServiceIssuesVerifiesClean(t *testing.T) {
+	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+	selfPub, selfPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := selfServeKey
+	selfServeKey = selfPub
+	t.Cleanup(func() { selfServeKey = orig })
+
+	// Exactly what internal/activation/service.go builds: the edition's own
+	// feature grant, looked up in the SHARED map. If this ever fails, the two
+	// lanes have drifted and paying customers cannot install.
+	raw, err := Sign(&Payload{
+		LicenseID: "l1", Customer: "C", Edition: "pro",
+		Features: EditionFeatures["pro"], Seats: 1, IssuedAt: now,
+	}, selfPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := VerifyAny(raw, []ed25519.PublicKey{selfPub}, now, "", "1.0.0")
+	if st.State != StateValid {
+		t.Fatalf("a licence carrying EditionFeatures[\"pro\"] was refused: %s (%s)\n"+
+			"verification is now stricter than issuance — every purchase fails at install",
+			st.State, st.Reason)
 	}
 }

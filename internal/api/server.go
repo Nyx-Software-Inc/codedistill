@@ -581,6 +581,11 @@ func (s *Server) Handler() http.Handler {
 	// Discovery on an UNSAVED provider: see the real model list before
 	// committing to a row, so a mistyped model fails while you are looking at it.
 	// The jobs monitor: what is running, on which model, and how far along.
+	mux.HandleFunc("GET /api/v1/readiness", s.readiness)
+	mux.HandleFunc("GET /api/v1/dependencies", s.listDependencies)
+	mux.HandleFunc("POST /api/v1/dependencies", s.createDependency)
+	mux.HandleFunc("POST /api/v1/dependencies/{id}/decide", s.decideDependency)
+	mux.HandleFunc("DELETE /api/v1/dependencies/{id}", s.deleteDependency)
 	mux.HandleFunc("GET /api/v1/decompose/runs", s.listDecomposeRuns)
 	mux.HandleFunc("GET /api/v1/decompose/runs/{jobID}", s.getDecomposeRun)
 	mux.HandleFunc("POST /api/v1/decompose/runs/{jobID}/accept-all", s.acceptAllProposals)

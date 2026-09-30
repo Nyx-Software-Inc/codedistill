@@ -51,6 +51,17 @@ type Store interface {
 	ForgetDecomposePasses(ctx context.Context, projectID, sourceHash string) error
 }
 
+// progressStore is the slice a reporter needs.
+//
+// Narrower than Store on purpose: reporting progress has nothing to do with
+// decomposition, and tying it to that interface stopped a second workflow from
+// reusing it.
+type progressStore interface {
+	UpdateJobProgress(ctx context.Context, id, phase string, done, total int, at time.Time) error
+	StartJobPhase(ctx context.Context, p *domain.JobPhase, at time.Time) error
+	UpdateJobPhase(ctx context.Context, jobID string, done, total, tokensIn, tokensOut int) error
+}
+
 // Progress reports where a run is. Called often; must not block.
 type Progress func(phase string, done, total int)
 
@@ -61,7 +72,7 @@ type Progress func(phase string, done, total int)
 // accumulates so a finished run can say it spent 24 minutes reading and 5
 // sorting. Neither can be derived from the other.
 type reporter struct {
-	store      Store
+	store      progressStore
 	jobID      string
 	workerType string
 	last       string

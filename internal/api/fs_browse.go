@@ -21,6 +21,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"codedistill/internal/features"
 )
 
 // fsBrowse backs the repo-root directory picker in the Files panel
@@ -31,9 +33,18 @@ import (
 // SECURITY: this intentionally exposes server-side directory names
 // (never file contents) to whoever can reach the HTTP port. That's the
 // deal for a local single-user app where browser and server share a
-// machine. When server/multi-user mode lands, this endpoint MUST be
-// gated off (it pairs naturally with the features.MultiUser boundary)
-// — a remote user has no business browsing the host filesystem.
+// machine.
+//
+// GATED as of the audit: refused outright when features.MultiUser is on, and
+// admin-only when SSO is configured. It had said for two releases that this
+// MUST happen "when server/multi-user mode lands" — multi-user landed in
+// v0.15 and the gate keyed off SSO instead, so a licensed multi-user install
+// with no OIDC configured browsed the host filesystem unauthenticated.
+//
+// RESIDUAL RISK, stated rather than left implied: a SINGLE-user install bound
+// to a non-loopback address still exposes directory names to its network.
+// That is the accepted deal above, and it is only a deal while the bind is
+// local.
 
 type fsBrowseDir struct {
 	Name string `json:"name"`
@@ -55,8 +66,26 @@ func (s *Server) fsBrowse(w http.ResponseWriter, r *http.Request) {
 	// operation (admins configure repo paths); a remote member — let alone
 	// an anonymous client — has no business walking the server's disk.
 	// Single-user installs (no auth configured) keep the local-app deal.
+	// Off entirely on a multi-user server, which is what the note above
+	// demands and what was missing: the previous gate keyed off s.auth, so an
+	// install with multi-user LICENSED but no OIDC configured passed straight
+	// through — and isAdmin's own fallback resolves an unauthenticated caller
+	// to "local", seeded by migration 0006 as an active workspace owner.
+	//
+	// Admin-only was considered and rejected. On a server the repository root
+	// is set by whoever administers the host, not chosen through a browser, and
+	// admin-only browsing still hands the host's directory layout to anybody
+	// who takes an admin session. GET is auth-exempt here (auth.go:51), so this
+	// is the only thing standing in front of it.
+	if features.Enabled(features.MultiUser) {
+		writeMsg(w, http.StatusForbidden,
+			"filesystem browsing is disabled on a multi-user server — set the repository root in the project's settings instead")
+		return
+	}
+	// Single-user, but with SSO configured: admins only. Someone has taken the
+	// trouble to put identity in front of this install.
 	if s.auth != nil && !s.isAdmin(r) {
-		writeMsg(w, http.StatusForbidden, "filesystem browsing on a multi-user server requires an admin")
+		writeMsg(w, http.StatusForbidden, "filesystem browsing requires an admin")
 		return
 	}
 	path := strings.TrimSpace(r.URL.Query().Get("path"))
