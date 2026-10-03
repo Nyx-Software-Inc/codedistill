@@ -13,6 +13,7 @@
 
 <script lang="ts">
   import { alertDialog, confirmDialog, promptDialog } from '../lib/dialog';
+  import { uiPrefs, orderProjects } from '../lib/uiPrefs.svelte';
   import { onMount, onDestroy } from 'svelte';
   import * as api from '../lib/api';
   import { shouldSubmit, getSubmitShortcut } from '../lib/submitShortcut';
@@ -123,8 +124,27 @@
   // filteredItems, scoped to this scratchpad. Falls back to canvas if
   // the license is lost.
   type ViewMode = 'canvas' | 'list' | 'calendar' | 'kanban';
-  let viewMode = $state<ViewMode>('canvas');
-  const effectiveView = $derived(canvasViewsEnabled ? viewMode : 'canvas');
+  // Opens in whichever view the user set; 'canvas' by default.
+  //
+  // NOT initialised from the preference directly. initUiPrefs() is async and
+  // fire-and-forget (App.svelte), so at the moment this component is created
+  // the preference is still its compile-time default — reading it once here
+  // captured 'canvas' every time, whatever the user had chosen.
+  //
+  // So: follow the preference until the user picks a view on this pad, then
+  // stop. A pad you switched to List should not snap back because the
+  // preference arrived late, and it should not fight you on every re-render.
+  let viewMode = $state<ViewMode | null>(null);
+  // $derived.by, and NO type argument on the rune.
+  //
+  // This was written `$derived<ViewMode>(...)` — the only generic-on-a-rune in
+  // the codebase — and the view stayed on canvas however the preference was set.
+  // A rune the compiler does not recognise as a rune compiles to an ordinary
+  // call, evaluated once at init, which is precisely the symptom: the value read
+  // before the async preference load and never read again.
+  const viewMode_effective = $derived.by((): ViewMode =>
+    viewMode ?? (uiPrefs.defaultCanvasView as ViewMode));
+  const effectiveView = $derived(canvasViewsEnabled ? viewMode_effective : 'canvas');
 
   // Open an item the same way the canvas card does — sketches/composites
   // route to their visual editors, everything else to the metadata
@@ -1390,7 +1410,7 @@
           disabled={moveBusy}
           onchange={(e) => onMoveProjectChange((e.currentTarget as HTMLSelectElement).value)}
         >
-          {#each moveProjects as p (p.id)}
+          {#each orderProjects(moveProjects) as p (p.id)}
             <option value={p.id}>{p.name}{p.id === projectId ? ' (current)' : ''}</option>
           {/each}
         </select>

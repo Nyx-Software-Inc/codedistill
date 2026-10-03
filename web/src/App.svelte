@@ -62,6 +62,7 @@
   import DataModelPanel from './components/DataModelPanel.svelte';
   import JobMonitor from './components/JobMonitor.svelte';
   import JobSubmit from './components/JobSubmit.svelte';
+  import { orderProjects } from './lib/uiPrefs.svelte';
   import ProposalReview from './components/ProposalReview.svelte';
   import CodeAnalysisPanel from './components/CodeAnalysisPanel.svelte';
   import HelpPanel from './components/HelpPanel.svelte';
@@ -1334,7 +1335,7 @@
     </span>
     <span class="header-divider" aria-hidden="true">/</span>
     <Picker
-      items={projects}
+      items={orderProjects(projects)}
       activeId={activeProjectId}
       label="project"
       emptyLabel="No project"

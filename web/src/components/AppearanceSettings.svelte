@@ -13,12 +13,23 @@
 
 <script lang="ts">
   import { onMount } from 'svelte';
+  import * as api from '../lib/api';
   import { currentThemeMode, setThemeMode, type ThemeMode } from '../lib/theme';
   import { currentFonts, setItemFont, setCodeFont, DEFAULT_ITEM_SIZE, DEFAULT_CODE_SIZE } from '../lib/fonts';
-  import { uiPrefs, setActivityWave, setItemNumberPrefix, type ItemNumberPrefix } from '../lib/uiPrefs.svelte';
+  import { uiPrefs, setActivityWave, setItemNumberPrefix, type ItemNumberPrefix,
+           setSortProjectsAlphabetically, setDefaultCanvasView,
+           CANVAS_VIEWS, type CanvasView } from '../lib/uiPrefs.svelte';
 
   // Appearance tab (UC-7): three-way theme mode. The choice applies
   // instantly (no reload) and persists as the ui.theme user setting.
+
+  // Alternative scratchpad views are a paid feature (canvas_views), and the
+  // canvas is forced when it is off — so a free install must not be offered a
+  // choice the gate will then ignore. Null means "not yet known", treated as
+  // licensed to avoid flashing a disabled control at a paying user while the
+  // fetch is in flight; the server enforces regardless.
+  let license = $state<api.LicenseInfo | null>(null);
+  const viewsLicensed = $derived(license === null || license.features.includes('canvas_views'));
 
   let mode = $state<ThemeMode>('dark');
 
@@ -36,6 +47,7 @@
   const CODE_FONTS = ['ui-monospace', 'SF Mono', 'Menlo', 'Consolas', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Source Code Pro', 'IBM Plex Mono', 'Roboto Mono'];
 
   onMount(() => {
+    void api.getLicense().then((l) => (license = l)).catch(() => { license = null; });
     mode = currentThemeMode();
     const f = currentFonts();
     itemFamily = f.itemFamily;
@@ -117,6 +129,40 @@
       />
       <span>Show the activity bar</span>
     </label>
+  </div>
+
+  <div class="fld">
+    <div class="fld-label">Project order</div>
+    <p class="hint">Project lists read in the order you created them, which keeps recent work near where you left it. Sort them by name once there are enough that finding one matters more than remembering the last.</p>
+    <label class="check-row">
+      <input
+        type="checkbox"
+        checked={uiPrefs.sortProjectsAlphabetically}
+        onchange={(e) => setSortProjectsAlphabetically((e.currentTarget as HTMLInputElement).checked)}
+      />
+      <span>Sort projects alphabetically</span>
+    </label>
+  </div>
+
+  <div class="fld">
+    <div class="fld-label">Default scratchpad view</div>
+    <p class="hint">
+      Which view a scratchpad opens in. The canvas is what the product is for; the
+      others are different readings of the same items. Switching view on a pad
+      still affects only that visit.
+      {#if !viewsLicensed}
+        <strong class="gated">List, Kanban and Calendar are part of Pro — the canvas is always available.</strong>
+      {/if}
+    </p>
+    <select
+      value={uiPrefs.defaultCanvasView}
+      disabled={!viewsLicensed}
+      onchange={(e) => setDefaultCanvasView((e.currentTarget as HTMLSelectElement).value as CanvasView)}
+    >
+      {#each CANVAS_VIEWS as v (v)}
+        <option value={v}>{v === 'canvas' ? 'Canvas (default)' : v.charAt(0).toUpperCase() + v.slice(1)}</option>
+      {/each}
+    </select>
   </div>
 
   <div class="fld">
