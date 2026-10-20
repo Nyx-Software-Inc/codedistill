@@ -137,6 +137,8 @@ type Server struct {
 	// picker. nil → GET /ollama/models returns an empty list. Wired via
 	// WithModelLister from ollama.Client.ListModels.
 	models func(ctx context.Context) ([]string, error)
+	// setup backs the first-run endpoints (setup.go); nil = not wired.
+	setup *SetupDeps
 	// authToken gates write requests (see auth.go). Empty = auth disabled
 	// (the -no-auth path / tests). Wired via WithAuthToken. Guarded by
 	// authMu because the regenerate endpoint swaps it while request
@@ -569,6 +571,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/use-cases/{id}/verify", s.triggerVerificationForOwner(ownerUseCaseItem))
 	// Installed local models for the reviewer-model picker (Settings → Verification).
 	mux.HandleFunc("GET /api/v1/ollama/models", s.ollamaModels)
+	// First-run setup (setup.go): what is missing, start Ollama, pull a model,
+	// record the choice. Guarded so a server built without WithSetup answers 404.
+	if s.setup != nil {
+		mux.HandleFunc("GET /api/v1/setup/status", s.setupStatus)
+		mux.HandleFunc("POST /api/v1/setup/ollama/start", s.setupStartOllama)
+		mux.HandleFunc("POST /api/v1/setup/pull", s.setupPull)
+		mux.HandleFunc("POST /api/v1/setup/complete", s.setupComplete)
+	}
 
 	// Model providers and the roles that use them. testProvider is the one
 	// that matters: it generates and proves the context window, because a

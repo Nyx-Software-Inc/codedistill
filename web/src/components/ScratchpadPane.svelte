@@ -84,6 +84,7 @@
     dedupEnabled?: boolean;
     // Paid (UC-4): show the List/Calendar view toggle only when licensed.
     canvasViewsEnabled?: boolean;
+    blockedBySource?: Map<string, import('../lib/api').Blocker[]>;
     // Source-item-id -> derived todo's due_date (ISO), for the Calendar
     // view. Built in App from the active pad's todos.
     dueDateBySource?: Map<string, string>;
@@ -113,6 +114,7 @@
     derivedStatus,
     dedupEnabled = false,
     canvasViewsEnabled = false,
+    blockedBySource,
     dueDateBySource = new Map(),
     latestNoteBySource = new Map(),
     tagsBySource = new Map(),
@@ -749,14 +751,6 @@
     }
   }
 
-  async function doAccept(item: ScratchpadItem) {
-    try {
-      await api.acceptItem(item.id);
-      onChange();
-    } catch (e) {
-      void alertDialog(`Accept failed: ${e}`);
-    }
-  }
 
   // UC-46: set/clear a calendar item's due date by resolving its derived item
   // (todo/bug/use-case) and PATCHing due_date. iso null clears; KB has no due date.
@@ -773,14 +767,6 @@
       onChange();
     } catch (e) {
       void alertDialog(`Set due date failed: ${e}`);
-    }
-  }
-  async function doReclassify(item: ScratchpadItem, category: 'todo' | 'bug' | 'kb' | 'use_case') {
-    try {
-      await api.reclassifyItem(item.id, category);
-      onChange();
-    } catch (e) {
-      void alertDialog(`Reclassify failed: ${e}`);
     }
   }
   async function doDismissSimilar(item: ScratchpadItem) {
@@ -1246,6 +1232,8 @@
   <div class="items">
     {#if effectiveView === 'list'}
       <ListView
+        {onChange}
+        {blockedBySource}
         items={filteredItems}
         {derivedStatus}
         {dueDateBySource}
@@ -1254,6 +1242,7 @@
       />
     {:else if effectiveView === 'calendar'}
       <CalendarView
+        {onChange}
         items={filteredItems}
         {derivedStatus}
         {dueDateBySource}
@@ -1262,6 +1251,7 @@
       />
     {:else if effectiveView === 'kanban'}
       <KanbanView
+        {blockedBySource}
         items={filteredItems}
         {derivedStatus}
         onOpen={openItem}
@@ -1269,6 +1259,7 @@
       />
     {:else}
       <ScratchpadGrid
+        {blockedBySource}
         items={filteredItems}
         onLayoutChange={commitLayout}
         onDelete={requestDelete}
@@ -1276,8 +1267,6 @@
         onEdit={openItem}
         onReprocess={reprocessItem}
         onMoveItem={(item) => startMove(item)}
-        onAccept={doAccept}
-        onReclassify={doReclassify}
         onOpenSimilar={onOpenSimilar}
         {onDecompose}
         onDismissSimilar={doDismissSimilar}

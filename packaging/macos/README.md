@@ -25,6 +25,9 @@ under `~/Library/Application Support/CodeDistill/`.
    `nyx-notary-key-p8`, `nyx-notary-key-id`, `nyx-notary-issuer`. Without
    them the stage produces the same dmg unsigned.
 
+The image holds only CodeDistill.app and an Applications shortcut; the app
+explains Ollama and model setup itself on first run.
+
 The Mac agent clones nothing: the Linux side stashes `dist/mac/**`,
 `packaging/macos/**`, `VERSION` and the icon, and the dmg is stashed back for
 the Archive stage.

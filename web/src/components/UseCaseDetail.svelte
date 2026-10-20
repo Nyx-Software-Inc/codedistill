@@ -13,6 +13,7 @@
 
 <script lang="ts">
   import { alertDialog } from '../lib/dialog';
+  import DependencyEditor from './DependencyEditor.svelte';
   import Modal from './Modal.svelte';
   import ReviewBar from './ReviewBar.svelte';
   import * as api from '../lib/api';
@@ -311,6 +312,14 @@
       <Verification ownerType="use_case_item" ownerId={draft.id} />
     </section>
     {:else if activeTab === 'log'}
+    <section>
+      <DependencyEditor
+        projectId={draft.project_id}
+        kind="use_case"
+        id={draft.id}
+        onChanged={onSaved}
+      />
+    </section>
     <section class="lineage">
       <ActivityLog ownerType="use_case_item" ownerId={draft.id} sourceItemId={draft.source_item_id} refreshTick={logTick} />
     </section>

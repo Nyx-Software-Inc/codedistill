@@ -29,7 +29,6 @@
 
   type Props = {
     projectId: string;
-    onClose?: () => void;
     /** Opens the submission dialog. Starting a job belongs next to the list of
      *  running ones — that is where someone is standing when they want another. */
     onNewJob?: () => void;
@@ -40,7 +39,7 @@
      *  nowhere to be accepted is a job that did not finish. */
     onReview?: (jobId: string) => void;
   };
-  let { projectId, onClose, onNewJob, reloadKey = 0, onReview }: Props = $props();
+  let { projectId, onNewJob, reloadKey = 0, onReview }: Props = $props();
 
   type Tab = 'running' | 'history';
   let tab = $state<Tab>('running');
@@ -179,8 +178,10 @@
 </script>
 
 <div class="monitor">
+  <!-- No <h2> and no close button: this renders inside a PaneFrame whose tab
+       strip already says "Jobs" and already carries the ×. Two titles and two
+       close buttons stacked is what made the pane chrome unreadable. -->
   <header>
-    <h2>Jobs</h2>
     <nav class="tabs">
       <button class:active={tab === 'running'} onclick={() => (tab = 'running')}>
         Running{running.length ? ` (${running.length})` : ''}
@@ -190,9 +191,6 @@
     <span class="spacer"></span>
     {#if onNewJob}
       <button class="newjob" onclick={onNewJob} title="Start a job">+ New</button>
-    {/if}
-    {#if onClose}
-      <button class="closebtn" onclick={onClose} aria-label="Close jobs">×</button>
     {/if}
   </header>
 
@@ -323,7 +321,6 @@
 <style>
   .monitor { display: flex; flex-direction: column; gap: 1rem; padding: 1rem; }
   header { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; }
-  h2 { margin: 0; font-size: 1.05rem; }
   .tabs { display: flex; gap: 0.25rem; }
   .tabs button { background: none; border: 1px solid transparent; border-radius: 6px;
                  padding: 0.25rem 0.6rem; color: var(--text-dim); font: inherit;
@@ -341,11 +338,6 @@
     font-size: 0.78rem; cursor: pointer;
   }
   .newjob:hover { background: var(--p-333333); }
-  .closebtn {
-    border: 0; background: none; color: var(--p-888888);
-    font-size: 1.1rem; line-height: 1; cursor: pointer; padding: 0 0.2rem;
-  }
-  .closebtn:hover { color: var(--text); }
   /* One card per run. The old flat rows gave two runs nine days apart the
      same visual weight as two lines of the same job. */
   .job {

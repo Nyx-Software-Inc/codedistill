@@ -51,6 +51,16 @@ type Supervisor struct {
 
 const defaultReadyTimeout = 30 * time.Second
 
+// Binary reports where the ollama executable is, honouring BinPath. It is
+// what the setup screen shows when the daemon is not running: "found at X"
+// versus "not installed".
+func (s *Supervisor) Binary() (string, error) {
+	if s.BinPath != "" {
+		return s.BinPath, nil
+	}
+	return discoverBin()
+}
+
 // EnsureRunning is the single entry point. Safe to call even when Ollama is
 // already up — it probes first and only spawns if the probe fails.
 func (s *Supervisor) EnsureRunning(ctx context.Context) (func(), error) {

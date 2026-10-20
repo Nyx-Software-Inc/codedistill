@@ -40,9 +40,8 @@ for a in arm64 amd64; do [ -d "$DIST/mac/$a/CodeDistill.app" ] && arches+=("$a")
 STAGE="$DIST/mac/universal"
 rm -rf "$STAGE"
 mkdir -p "$STAGE"
-cp -R "$DIST/mac/${arches[0]}/." "$STAGE/"
+cp -R "$DIST/mac/${arches[0]}/CodeDistill.app" "$STAGE/"
 APP="$STAGE/CodeDistill.app"
-rm -f "$STAGE/README.txt"
 if [ ${#arches[@]} -gt 1 ]; then
   say "universal binaries (${arches[*]})"
   for b in CodeDistill codedistill-bin; do
@@ -68,34 +67,10 @@ if [ -f CodeDistill-icon.png ] && command -v iconutil >/dev/null 2>&1; then
   /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string CodeDistill" "$APP/Contents/Info.plist"
 fi
 
-# ── 3. README for the volume ───────────────────────────────────────────────
+# ── 3. (The volume holds only the app and the Applications shortcut. Setup
+#        guidance lives in the app's own first-run screen and the release notes.)
 SIGNED=no
 [ -n "${P12:-}" ] && SIGNED=yes
-{
-  echo "CodeDistill — macOS build (v$VERSION, Apple Silicon and Intel)"
-  echo
-  echo "INSTALL"
-  echo "  Drag CodeDistill.app to your Applications folder, then double-click it."
-  echo "  The server starts and your browser opens http://localhost:8080."
-  echo
-  echo "QUICK START (fresh machines)"
-  echo "  Open Terminal in this volume and run:  bash install.sh"
-  echo "  Installs Ollama (if missing), pulls models, initializes the DB."
-  echo
-  echo "ALREADY HAVE OLLAMA?"
-  echo "  Skip install.sh. You need:  ollama pull qwen2.5:7b  and  ollama pull nomic-embed-text"
-  echo
-  if [ "$SIGNED" = yes ]; then
-    echo "This build is signed with a Nyx Software, Inc. Developer ID and notarized by Apple."
-  else
-    echo "GATEKEEPER (UNSIGNED BUILD)"
-    echo "  Right-click CodeDistill.app → Open → Open on first launch, or approve it under"
-    echo "  System Settings → Privacy & Security after the first blocked attempt."
-  fi
-  echo
-  echo "DATA"
-  echo "  Database + blobs live under ~/Library/Application Support/CodeDistill/."
-} > "$STAGE/README.txt"
 
 # ── 4. Sign ────────────────────────────────────────────────────────────────
 KEYCHAIN=codedistill-build.keychain-db
@@ -105,9 +80,31 @@ if [ "$SIGNED" = yes ]; then
   echo "certificate file: $(stat -f %z "$P12") bytes, $(file -b "$P12")"
   WORK=$(mktemp -d)
   trap 'rm -rf "$WORK"; security delete-keychain "$KEYCHAIN" 2>/dev/null || true' EXIT
-  # macOS's importer rejects some PKCS#12 encryption variants; re-encode with the system openssl.
-  openssl pkcs12 -in "$P12" -passin env:P12PASS -nodes -out "$WORK/id.pem"
-  openssl pkcs12 -export -in "$WORK/id.pem" -passout env:P12PASS -out "$WORK/id.p12"
+  # macOS's importer rejects some PKCS#12 encryption variants, so the identity is
+  # re-encoded before import. WHICH openssl does that matters:
+  #
+  #   LibreSSL (/usr/bin/openssl) reads Apple's .p12 exports directly — they are
+  #   encrypted with RC2-40-CBC, the ancient PKCS#12 default.
+  #
+  #   OpenSSL 3 moved RC2 into the LEGACY PROVIDER, which is not loaded by
+  #   default, so the same file fails with "unknown cipher RC2-40-CBC". Not a
+  #   wrong password and not a bad certificate — an algorithm it cannot reach.
+  #
+  # `openssl` resolves through PATH, so a Homebrew OpenSSL 3 on the agent
+  # silently displaces the LibreSSL this was written for. Rather than pin a path
+  # and hope, ask the binary what it can do: -legacy exists only on OpenSSL 3,
+  # is required there, and would itself fail on LibreSSL.
+  PK12_LEGACY=""
+  if openssl pkcs12 -help 2>&1 | grep -q -- '-legacy'; then
+    PK12_LEGACY="-legacy"
+    say "openssl needs -legacy to read RC2-encrypted PKCS#12"
+  fi
+  # Both calls, deliberately: -legacy also makes the re-encode WRITE the old
+  # format, which is the variant `security import` has always been handed here.
+  # Reading new and writing new would change two things at once in a step that
+  # can only be tested by running the pipeline.
+  openssl pkcs12 $PK12_LEGACY -in "$P12" -passin env:P12PASS -nodes -out "$WORK/id.pem"
+  openssl pkcs12 $PK12_LEGACY -export -in "$WORK/id.pem" -passout env:P12PASS -out "$WORK/id.p12"
   security delete-keychain "$KEYCHAIN" 2>/dev/null || true
   security create-keychain -p "" "$KEYCHAIN"
   security unlock-keychain -p "" "$KEYCHAIN"
@@ -137,7 +134,7 @@ if [ "$SIGNED" = yes ]; then
   codesign --verify --deep --strict "$APP"
 fi
 
-# ── 5. The disk image: app + install.sh + README + Applications shortcut ──
+# ── 5. The disk image: the app and an Applications shortcut ───────────────
 say "disk image"
 ln -sfn /Applications "$STAGE/Applications"
 DMG="$DIST/CodeDistill-$VERSION-macos.dmg"

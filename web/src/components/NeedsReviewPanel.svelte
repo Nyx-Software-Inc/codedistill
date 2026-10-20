@@ -20,32 +20,58 @@
   //      human; your approve/reject is evidence that feeds project trust.
   // The Dashboard shows the STATS; the work happens here or on the items.
   import * as api from '../lib/api';
+  import Icon from './Icon.svelte';
+  import ScratchpadItemEdit from './ScratchpadItemEdit.svelte';
+  import ClassifyBar from './ClassifyBar.svelte';
   import type { ScratchpadItem } from '../lib/types';
   import { alertDialog, promptDialog } from '../lib/dialog';
-  import Modal from './Modal.svelte';
 
+  // A PANE, not a modal — which is the whole point of the panes work. This was
+  // a <Modal> you opened, acted in and dismissed, and that framing is what made
+  // the classification queue invisible: with List as the default scratchpad
+  // view, 39 findings needed accept/reject and nothing on screen said so. A
+  // surface you need continuously must not be something you keep opening.
+  //
+  // Dropping the modal changed three things. There is no `open` prop, because a
+  // pane renders only when it is the active pane in its slot — mounted IS
+  // visible. There is no `onClose`, because PaneFrame owns closing. And the
+  // width is no longer 860px: the right slot is ~460 and the bottom slot is the
+  // full window, so the layout below is container-query driven rather than
+  // assuming room for a single row.
   type Props = {
-    open: boolean;
     projectId: string;
     projectName?: string;
-    onClose: () => void;
+    /** Bumped by App whenever its data cycle ran, so a pane left open does not
+     *  go stale. A modal got a fresh load every time it opened; a pane has to be
+     *  told. */
+    tick?: number;
     // Fired after any decision so App refreshes counts + canvas.
     onChanged: () => void;
+    /** Open an implemented item's detail. App owns those modals, so unlike the
+     *  pending section — whose source editor this panel mounts itself — this one
+     *  has to travel out. Worth the prop: approving work you cannot inspect is a
+     *  worse version of the problem this whole change is about. */
+    onOpenItem?: (ownerType: string, ownerId: string) => void;
   };
-  let { open, projectId, projectName = '', onClose, onChanged }: Props = $props();
+  let { projectId, projectName = '', tick = 0, onChanged, onOpenItem }: Props = $props();
 
   let inbox = $state<ScratchpadItem[]>([]);
   let queue = $state<api.ReviewQueueResponse | null>(null);
   let loading = $state(false);
   let err = $state('');
   let loadedFor = $state('');
+  /** The capture being read, or null. */
+  let opened = $state<ScratchpadItem | null>(null);
 
+  // Reload on mount, on a project switch, and on App's tick. Reading both
+  // values inside the effect is what subscribes to them — the previous version
+  // keyed off `open`, which no longer exists.
   $effect(() => {
-    if (open && projectId && loadedFor !== projectId + ':open') {
-      loadedFor = projectId + ':open';
+    const key = projectId + ':' + tick;
+    if (projectId && loadedFor !== key) {
+      loadedFor = key;
       void load();
     }
-    if (!open) loadedFor = '';
   });
 
   // scratchpad_id → name for the current project, so each pending item shows
@@ -74,31 +100,10 @@
     }
   }
 
-  // Per-item busy state — a Set so one item processing doesn't disable the
-  // others (Rich's find: accepting item A blocked B and C). Concurrent
-  // accepts are fine.
-  let busyItems = $state<Set<string>>(new Set());
-  let busyLabels = $state<Record<string, string>>({});
-  const isBusy = (id: string, label?: string) =>
-    busyItems.has(id) && (label === undefined || busyLabels[id] === label);
-  async function act(itemID: string, label: string, fn: () => Promise<unknown>) {
-    if (busyItems.has(itemID)) return;
-    busyItems = new Set(busyItems).add(itemID);
-    busyLabels = { ...busyLabels, [itemID]: label };
-    try {
-      await fn();
-      await load();
-      onChanged();
-    } catch (e) {
-      void alertDialog(`Action failed: ${e}`);
-    } finally {
-      const next = new Set(busyItems);
-      next.delete(itemID);
-      busyItems = next;
-      const { [itemID]: _drop, ...rest } = busyLabels;
-      busyLabels = rest;
-    }
-  }
+  // Per-item busy state used to live here as a shared Set, because accepting
+  // item A would otherwise disable B and C (Rich's find). ClassifyBar makes that
+  // structural instead: each row renders its own instance with its own busy
+  // flag, so one decision cannot block another by construction.
 
   // Per-item, keyed by owner_type+id: reviewing one item mustn't disable the
   // rest (same fix as the classification section above).
@@ -136,7 +141,28 @@
   const decided = $derived((queue?.items ?? []).filter((i) => i.needs_review && i.decision));
 </script>
 
-<Modal {open} title={`Needs review — ${projectName}`} {onClose} width="860px">
+<!-- Owned here rather than reached through App: the panel is a pane, so it
+     cannot call ScratchpadPane's openItem router. A pending capture has no
+     derived item by definition, so the source editor is the only correct
+     target anyway. -->
+<ScratchpadItemEdit
+  item={opened}
+  onClose={() => (opened = null)}
+  onSaved={() => { void load(); onChanged(); }}
+/>
+
+<div class="nr">
+  <!-- The project name lived in the modal's title bar. The pane's header is a
+       tab strip reading "Needs review", so the scope has to be stated here or
+       you cannot tell whose queue you are looking at. -->
+  <div class="scope">
+    <span class="proj">{projectName || 'No project'}</span>
+    <button class="reload" onclick={() => void load()} disabled={loading} title="Reload the queue">
+      {loading ? '…' : '↻'}
+    </button>
+  </div>
+
+  <div class="nr-body">
   {#if loading && !queue}
     <p class="muted">Loading…</p>
   {:else}
@@ -154,31 +180,33 @@
         {#each inbox as item (item.id)}
           <article class="entry">
             <div class="meta">
+              <!-- Deciding without being able to inspect was the real gap: the
+                   panel could accept, reclassify and reject a capture but had no
+                   way to READ it. Sits in the metadata line that already exists,
+                   so it costs no extra row. -->
+              <button
+                class="open"
+                title="Open this capture"
+                aria-label="Open this capture"
+                onclick={() => (opened = item)}
+              ><Icon name="edit" size={11} /></button>
               <span class="cat">{item.proposed_category ?? '?'}</span>
               {#if padNames[item.scratchpad_id]}<span class="pad" title="Scratchpad">🗂 {padNames[item.scratchpad_id]}</span>{/if}
-              <span class="excerpt">{item.content.slice(0, 140)}{item.content.length > 140 ? '…' : ''}</span>
+              <!-- Full content, clamped to three lines, rather than a 140-char
+                   slice. The old cut landed mid-word at a fixed count and
+                   ignored how wide the pane actually is — and the pane is
+                   resizable now. Most captures are short enough to show whole,
+                   so only long ones clamp. -->
+              <span class="excerpt">{item.content}</span>
             </div>
             {#if item.classification_reasoning}
               <div class="reasoning">↳ {item.classification_reasoning}</div>
             {/if}
-            <div class="actions">
-              <button class="ok" disabled={isBusy(item.id)}
-                onclick={() => act(item.id, 'accept', () => api.acceptItem(item.id))}>
-                {isBusy(item.id, 'accept') ? 'Accepting…' : `Accept ${item.proposed_category}`}
-              </button>
-              {#each ['todo', 'bug', 'kb', 'use_case'] as cat (cat)}
-                {#if item.proposed_category !== cat}
-                  <button disabled={isBusy(item.id)}
-                    onclick={() => act(item.id, cat, () => api.reclassifyItem(item.id, cat as 'todo' | 'bug' | 'kb' | 'use_case'))}>
-                    {isBusy(item.id, cat) ? '…' : `→ ${cat}`}
-                  </button>
-                {/if}
-              {/each}
-              <button class="danger" disabled={isBusy(item.id)}
-                onclick={() => act(item.id, 'reject', () => api.rejectItem(item.id))}>
-                {isBusy(item.id, 'reject') ? 'Rejecting…' : 'Reject'}
-              </button>
-            </div>
+            <!-- The same accept/reclassify/reject as every other view.
+                 expanded: this is a queue you work straight through, so all
+                 four categories stay inline — a dropdown would cost a click
+                 per item on the one surface built for a run of decisions. -->
+            <ClassifyBar item={item} expanded onChanged={() => { void load(); onChanged(); }} />
           </article>
         {/each}
       {/if}
@@ -219,6 +247,14 @@
               <button class="ok" disabled={isReviewing(it)} onclick={() => review(it, 'approved')}>✓ Approve</button>
               <button class="danger" disabled={isReviewing(it)} onclick={() => review(it, 'rejected')}>✗ Rework</button>
             </span>
+            {#if onOpenItem}
+              <button
+                class="open"
+                title="Open {it.subject}"
+                aria-label="Open {it.subject}"
+                onclick={() => onOpenItem(it.owner_type, it.id)}
+              ><Icon name="edit" size={11} /></button>
+            {/if}
           </article>
         {/each}
       {/if}
@@ -227,9 +263,42 @@
       {/if}
     </section>
   {/if}
-</Modal>
+  </div>
+</div>
 
 <style>
+  .nr {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    height: 100%;
+    /* The unit the queries below measure. A pane is 460px at the right edge and
+       the full window along the bottom, so entries cannot assume either. */
+    container-type: inline-size;
+  }
+  .nr-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 10px 12px 14px;
+  }
+
+  .scope {
+    display: flex; align-items: center; gap: 8px;
+    padding: 5px 10px;
+    border-bottom: 1px solid var(--p-222222);
+    flex: none;
+  }
+  .proj {
+    flex: 1; min-width: 0; font-size: 11px; color: var(--p-888888);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .reload {
+    flex: none; border: 0; background: none; color: var(--p-777777);
+    cursor: pointer; font-size: 12px; padding: 0 3px;
+  }
+  .reload:hover:not(:disabled) { color: var(--text); }
+
   .muted { color: var(--p-777777); font-size: 12px; }
   .small { font-size: 11px; margin: 6px 2px 0; }
   .err { color: var(--p-ff8888); font-size: 12px; }
@@ -252,13 +321,50 @@
     background: var(--p-141414); border: 1px solid var(--p-262626); border-radius: 6px;
     padding: 8px 10px; margin-bottom: 6px;
   }
-  .meta { display: flex; gap: 8px; align-items: baseline; }
+  /* flex-start, not baseline: the excerpt is up to three lines now, and
+     baseline alignment would drag the badges down to its last line. */
+  .meta { display: flex; gap: 8px; align-items: flex-start; }
+
+  .open {
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    margin-top: 1px;
+    border: 1px solid var(--p-333333);
+    border-radius: 3px;
+    background: none;
+    color: var(--p-8a8a8a);
+    cursor: pointer;
+  }
+  .open:hover { color: var(--text); border-color: var(--p-555555); background: var(--p-262626); }
+  /* The sign-off row is one centred line, so it does not want the pending
+     row's top nudge (that exists to line the button up with the first line of
+     a three-line excerpt). */
+  .entry.rq .open { margin-top: 0; }
   .cat {
     flex: none; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
     color: var(--p-ccaaff); border: 1px solid var(--p-3a2a55); border-radius: 3px; padding: 1px 6px;
   }
   .pad { flex: none; font-size: 10px; color: var(--p-7d97b0); font-family: ui-monospace, monospace; }
-  .excerpt { font-size: 12.5px; color: var(--p-dddddd); }
+  .excerpt {
+    flex: 1;
+    min-width: 0;
+    font-size: 12.5px;
+    color: var(--p-dddddd);
+    /* Three lines, then ellipsis — and it keeps the badges on line one because
+       the box only grows downward. */
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
   .reasoning { font-size: 11px; color: var(--p-888888); margin-top: 4px; }
   .actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
   .actions button { font-size: 11px; padding: 3px 9px; }
@@ -283,4 +389,37 @@
   .flag.bad { color: var(--p-ff8888); background: var(--p-2a1414); }
   .flag.zone { color: var(--p-99ccff); background: var(--p-16222e); }
   .entry.rq .actions { margin-top: 0; flex: none; }
+
+  /* Narrow pane: the one-line row becomes three stacked lines. At 460px the
+     band, a subject, four flags and two buttons cannot share a row — the
+     subject would ellipsis down to nothing and the buttons would be the only
+     thing you could read. */
+  @container (max-width: 560px) {
+    .entry.rq {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      grid-template-areas:
+        'band    subj    open'
+        'flags   flags   flags'
+        'actions actions actions';
+      gap: 6px 8px;
+      align-items: start;
+    }
+    .entry.rq .band { grid-area: band; }
+    /* Without this the button has no area and lands in the first free cell —
+       the row BELOW actions, which is where Rich found it. */
+    .entry.rq .open { grid-area: open; }
+    .entry.rq .subj {
+      grid-area: subj;
+      /* Wraps instead of truncating: two lines of subject beats an ellipsis. */
+      white-space: normal;
+      overflow: visible;
+      text-overflow: clip;
+    }
+    .entry.rq .flags { grid-area: flags; flex-wrap: wrap; }
+    .entry.rq .actions { grid-area: actions; }
+    .entry.rq .domain { margin-left: 0; display: block; }
+    /* The classification entry's own buttons already wrap; the hint does not. */
+    .blk-head { flex-wrap: wrap; }
+  }
 </style>

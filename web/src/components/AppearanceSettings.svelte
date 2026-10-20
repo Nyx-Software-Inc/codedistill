@@ -15,6 +15,7 @@
   import { onMount } from 'svelte';
   import * as api from '../lib/api';
   import { currentThemeMode, setThemeMode, type ThemeMode } from '../lib/theme';
+  import { resetLayout } from '../lib/layoutStore.svelte';
   import { currentFonts, setItemFont, setCodeFont, DEFAULT_ITEM_SIZE, DEFAULT_CODE_SIZE } from '../lib/fonts';
   import { uiPrefs, setActivityWave, setItemNumberPrefix, type ItemNumberPrefix,
            setSortProjectsAlphabetically, setDefaultCanvasView,
@@ -78,6 +79,16 @@
     { mode: 'bracket', label: '[95]', hint: 'Bracketed number' },
     { mode: 'typed', label: 'BUG-95', hint: 'Type + number' },
   ];
+
+  // The design doc named "a layout the user cannot recover from" as the main
+  // risk of docking, and drag and drop is what made it reachable. resetLayout()
+  // existed in the store from the start; nothing called it.
+  let resetDone = $state(false);
+  function resetPanes() {
+    resetLayout();
+    resetDone = true;
+    setTimeout(() => (resetDone = false), 1800);
+  }
 </script>
 
 <div class="appearance">
@@ -180,6 +191,19 @@
       {/each}
     </div>
   </div>
+
+  <div class="fld">
+    <div class="fld-label">Pane layout <span class="fld-note">left · right · bottom</span></div>
+    <p class="hint">
+      Reset every pane to where it started: the project tree on the left, nothing
+      else open. Reach for this if dragging has left a pane somewhere you cannot
+      get it back from — the arrangement is saved per user, so a bad one survives
+      a reload.
+    </p>
+    <button type="button" class="reset-layout" onclick={resetPanes}>
+      {resetDone ? 'Layout reset' : 'Reset pane layout'}
+    </button>
+  </div>
 </div>
 
 <style>
@@ -204,6 +228,11 @@
   .fld-label { font-size: 12px; font-weight: 600; color: var(--p-cccccc); }
   .fld-note { font-weight: 400; color: var(--p-777777); font-size: 11px; margin-left: 4px; }
   .fld-row { display: flex; gap: 8px; }
+  .reset-layout {
+    font-size: 12px;
+    padding: 4px 11px;
+    align-self: flex-start;
+  }
   .font-in {
     flex: 1; min-width: 0;
     background: var(--p-0a0a0a); border: 1px solid var(--p-333333); border-radius: 4px;

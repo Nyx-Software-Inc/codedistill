@@ -616,6 +616,86 @@ export interface ReviewQueueResponse {
   // Per-area earned trust (Phase 4 competence map): top-level dir → its trust.
   domain_trust?: Record<string, ProjectTrust>;
 }
+// Dependency readiness (migrations 0076/0077). The server already computes
+// everything the UI needs — each item's hard blockers WITH the blocker's own
+// status, what it unblocks, and the weaker 'informs' relations — so the client
+// never re-derives "is this blocked", which is the kind of thing two
+// implementations would eventually disagree about.
+export interface Blocker {
+  edge_id: string;
+  kind: string;
+  id: string;
+  ref?: string;
+  subject: string;
+  /** The BLOCKER's status, not the blocked item's. A settled blocker no longer
+   *  blocks, which is why this has to travel with the edge. */
+  status: string;
+  rationale?: string;
+  advisory: boolean;
+}
+
+export interface ReadyItem {
+  kind: string;
+  id: string;
+  ref?: string;
+  subject: string;
+  status: string;
+  blocked_by?: Blocker[];
+  unblocks: number;
+  informs?: Blocker[];
+}
+
+export interface ReadinessResponse {
+  /** Nothing unsettled blocking them. */
+  ready: ReadyItem[];
+  blocked: ReadyItem[];
+  edges_in_force: number;
+  /** False when the project has no edges at all — in which case everything is
+   *  trivially "ready" and the UI should show no dependency affordances rather
+   *  than implying an order nobody has worked out. */
+  has_ordering: boolean;
+}
+
+export interface ItemDependency {
+  id: string;
+  project_id: string;
+  from_kind: string;
+  from_id: string;
+  to_kind: string;
+  to_id: string;
+  kind: string;
+  rationale?: string;
+  origin: string;
+  created_at: string;
+  created_by?: string;
+  status: string;
+  job_id?: string;
+}
+
+export const listDependencies = (projectId: string) =>
+  req<ItemDependency[]>('GET', `/dependencies?project_id=${encodeURIComponent(projectId)}`);
+
+/** Draw an edge by hand: `from` is blocked by `to`.
+ *
+ *  The server stamps origin=human and status=accepted — a hand-drawn edge is in
+ *  force the moment it is drawn, with nothing to ratify. Only DERIVED edges
+ *  wait, and even they are advisory. */
+export const createDependency = (body: {
+  project_id: string;
+  from_kind: string;
+  from_id: string;
+  to_kind: string;
+  to_id: string;
+  kind?: string;
+  rationale?: string;
+}) => req<ItemDependency>('POST', '/dependencies', body);
+
+export const deleteDependency = (id: string) =>
+  req<void>('DELETE', `/dependencies/${id}`);
+
+export const getReadiness = (projectId: string) =>
+  req<ReadinessResponse>('GET', `/readiness?project_id=${encodeURIComponent(projectId)}`);
+
 export const getReviewQueue = (projectId: string) =>
   req<ReviewQueueResponse>('GET', `/projects/${projectId}/review-queue`);
 
@@ -1715,3 +1795,56 @@ export interface BatchResult {
  *  partial failure invisible; this returns a verdict per proposal. */
 export const decideProposals = (jobId: string, decisions: Decision[]) =>
   req<BatchResult>('POST', `/decompose/runs/${jobId}/decide`, { decisions });
+
+// ---------------------------------------------------------------------------
+// First-run setup (SetupScreen). The server stays up without Ollama and
+// reports here what is missing; pulls stream Ollama's own NDJSON progress.
+export type SetupStatus = {
+  completed: boolean;
+  ollama: { endpoint: string; reachable: boolean; binary: string; error?: string; can_start: boolean };
+  models: { classifier: string; default: string; recommended: string; embed: string; installed: string[] };
+  memory_gb: number;
+  data_dir: string;
+  platform: string;
+};
+export type PullProgress = { status: string; total?: number; completed?: number; error?: string };
+
+export const getSetupStatus = () => req<SetupStatus>('GET', '/setup/status');
+export const startOllama = () => req<SetupStatus>('POST', '/setup/ollama/start');
+export const completeSetup = (model: string) => req<SetupStatus>('POST', '/setup/complete', { model });
+
+/** Pulls a model through the server, reporting each progress line. Resolves
+ *  when Ollama reports success; rejects on an error line or a failed request. */
+export async function pullModel(model: string, onProgress: (p: PullProgress) => void): Promise<void> {
+  const res = await fetch(BASE + '/setup/pull', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model }),
+  });
+  if (!res.ok || !res.body) {
+    let msg = await res.text();
+    try { msg = JSON.parse(msg).error ?? msg; } catch { /* plain text */ }
+    throw new Error(msg || `pull failed (${res.status})`);
+  }
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  let ok = false;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let nl: number;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line) continue;
+      let p: PullProgress;
+      try { p = JSON.parse(line); } catch { continue; }
+      if (p.error) throw new Error(p.error);
+      if (p.status === 'success') ok = true;
+      onProgress(p);
+    }
+  }
+  if (!ok) throw new Error('download ended before Ollama reported success');
+}

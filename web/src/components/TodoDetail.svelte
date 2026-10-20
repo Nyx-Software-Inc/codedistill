@@ -13,6 +13,7 @@
 
 <script lang="ts">
   import { alertDialog } from '../lib/dialog';
+  import DependencyEditor from './DependencyEditor.svelte';
   import Modal from './Modal.svelte';
   import ReviewBar from './ReviewBar.svelte';
   import * as api from '../lib/api';
@@ -252,6 +253,14 @@
       <Verification ownerType="todo_item" ownerId={draft.id} />
     </section>
     {:else}
+    <section>
+      <DependencyEditor
+        projectId={draft.project_id}
+        kind="todo"
+        id={draft.id}
+        onChanged={onSaved}
+      />
+    </section>
     <section class="lineage">
       <ActivityLog ownerType="todo_item" ownerId={draft.id} sourceItemId={draft.source_item_id} refreshTick={logTick} />
     </section>

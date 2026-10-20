@@ -20,6 +20,7 @@
 -->
 <script lang="ts">
   import Modal from './Modal.svelte';
+  import DependencyEditor from './DependencyEditor.svelte';
   import * as api from '../lib/api';
   import CodeAnchorChips from './CodeAnchorChips.svelte';
   import SourceItemFields from './SourceItemFields.svelte';
@@ -179,6 +180,14 @@
       <SourceItemFields itemId={draft.source_item_id} {onSaved} {onOpenFile} />
     </section>
     {:else if activeTab === 'log'}
+    <section>
+      <DependencyEditor
+        projectId={draft.project_id}
+        kind="kb"
+        id={draft.id}
+        onChanged={onSaved}
+      />
+    </section>
     <section class="lineage">
       <ActivityLog ownerType="knowledge_entry" ownerId={draft.id} sourceItemId={draft.source_item_id} />
     </section>

@@ -13,6 +13,12 @@
 
 <script lang="ts">
   import { alertDialog } from '../lib/dialog';
+  import ClassifyBar from './ClassifyBar.svelte';
+  import {
+    showsStripe, showsTint, showsTypeLabel,
+    type TypeColorsConfig,
+  } from '../lib/typeColors';
+  import type { Blocker } from '../lib/api';
   import type { ScratchpadItem, CodeAnchor } from '../lib/types';
   import { copyToClipboard, itemToMarkdown, plainContent } from '../lib/markdown';
   import { draftingCriteria } from '../lib/draftingStore';
@@ -36,8 +42,6 @@
     // Triggered from the in-card pending-review banner. The agent's
     // proposed_category is offered as the headline Accept option; the
     // dropdown lets the user reclassify to any of the other categories.
-    onAccept: (item: ScratchpadItem) => void | Promise<void>;
-    onReclassify: (item: ScratchpadItem, category: 'todo' | 'bug' | 'kb' | 'use_case') => void;
     // Dedup banner: when the agent flagged a possible duplicate,
     // onOpenSimilar navigates the user to that other item; onDismiss-
     // Similar clears the candidate-match fields ("not a duplicate").
@@ -76,6 +80,9 @@
     // selection; the Group button hides.
     selectedItemIds?: Set<string>;
     onSelectionChange?: (next: Set<string>) => void;
+    /** Refresh after a classification decision. The grid had no such callback
+     *  before: accept left through onAccept, which the parent fulfilled. */
+    onChange?: () => void;
     // Toggle a group's collapsed state. Routes to api.updateItem
     // via the parent.
     onToggleGroupCollapse?: (group: ScratchpadItem) => void;
@@ -88,7 +95,12 @@
     onRenameGroup?: (group: ScratchpadItem, name: string) => void;
     // UC-18: per-type card background tinting. Undefined or
     // enabled=false → default backgrounds.
-    typeColors?: { enabled: boolean; colors: Record<string, string> };
+    typeColors?: TypeColorsConfig;
+    // Hard blockers per SOURCE item id (App does the derived-item hop). Only
+    // 'blocks' relations that are still unsettled reach here — 'informs' is
+    // deliberately absent, because if both showed then most cards would carry a
+    // chip and the chip would stop meaning anything.
+    blockedBySource?: Map<string, Blocker[]>;
     // UC-48: due-date header coloring. dueDateBySource maps a source item id
     // -> its derived todo's due_date (ISO); dueDateColors gates the feature.
     dueDateBySource?: Map<string, string>;
@@ -100,18 +112,20 @@
   };
   let {
     items, onLayoutChange, onDelete, onHide, onEdit, onMoveItem, onReprocess, onDecompose,
-    onAccept, onReclassify, onOpenSimilar, onDismissSimilar, onGroupSimilar,
+    onOpenSimilar, onDismissSimilar, onGroupSimilar,
     flashItemId = null, itemAnchors = {}, onAnchorBadge, onAnchorBadgeHover,
     doneSourceIds,
     derivedStatus,
     latestNoteBySource,
     selectedItemIds = new Set<string>(),
     onSelectionChange = () => {},
+    onChange = () => {},
     onToggleGroupCollapse = () => {},
     onDeleteGroup = () => {},
     onSaveGroupNote = () => {},
     onRenameGroup = () => {},
     typeColors,
+    blockedBySource,
     dueDateBySource,
     dueDateColors,
     tagsBySource,
@@ -234,13 +248,46 @@
     return tagsBySource?.get(item.id) ?? item.tags ?? [];
   }
 
+  function blockersFor(item: ScratchpadItem): Blocker[] {
+    return blockedBySource?.get(item.id) ?? [];
+  }
+
+  /** One line naming what is in the way. Refs when the items have them
+   *  (LOC-12 is more use than a truncated subject), subjects otherwise. */
+  function blockedTooltip(bs: Blocker[]): string {
+    const names = bs.map((b) => b.ref || b.subject || b.id);
+    return bs.length === 1
+      ? `Blocked by ${names[0]} — it has to be done first`
+      : `Blocked by ${bs.length}: ${names.join(', ')}`;
+  }
+
+  /** stripeFor returns the full-strength type colour for the card's left edge.
+   *
+   *  The primary carrier now that the type word is gone. Four hues at a 30%
+   *  body blend are genuinely hard to separate on a dark card; the same four at
+   *  full saturation are obvious. Groups get none — a group frame is not typed.
+   */
+  function stripeFor(item: ScratchpadItem): string {
+    if (!showsStripe(typeColors) || item.content_type === 'group') return '';
+    const cat = effectiveCategory(item);
+    return typeColors?.colors[cat] ?? typeColors?.colors['unclassified'] ?? '';
+  }
+
   // UC-18: card background tint by effective type. ~30% blend with
   // the theme card background keeps text readable under any picked
   // color, in both themes.
+  /** The type a card is actually showing: a user override beats the model's
+   *  proposal. Extracted so the stripe and the tint cannot drift apart — two
+   *  copies of this expression would eventually disagree, and a card whose edge
+   *  and body claimed different types would be worse than no colour at all. */
+  function effectiveCategory(item: ScratchpadItem): string {
+    return item.classification_override || item.proposed_category || 'unclassified';
+  }
+
   function cardTint(item: ScratchpadItem): string {
-    if (!typeColors?.enabled || item.content_type === 'group') return '';
-    const cat = item.classification_override || item.proposed_category || 'unclassified';
-    const c = typeColors.colors[cat] ?? typeColors.colors['unclassified'];
+    if (!showsTint(typeColors) || item.content_type === 'group') return '';
+    const cat = effectiveCategory(item);
+    const c = typeColors?.colors[cat] ?? typeColors?.colors['unclassified'];
     if (!c) return '';
     return `background: color-mix(in srgb, ${c} 30%, var(--p-222222));`;
   }
@@ -270,18 +317,6 @@
   // the button disables + shows "Accepting…" the instant it's clicked, even
   // when the classifier is busy with other items — so it never feels like a
   // mis-click. Per-item (a Set) so accepting one doesn't freeze the rest.
-  let accepting = $state<Set<string>>(new Set());
-  async function accept(item: ScratchpadItem) {
-    if (accepting.has(item.id)) return;
-    accepting = new Set(accepting).add(item.id);
-    try {
-      await onAccept(item);
-    } finally {
-      const next = new Set(accepting);
-      next.delete(item.id);
-      accepting = next;
-    }
-  }
 
   function toggleSelection(id: string) {
     const next = new Set(selectedItemIds);
@@ -364,7 +399,6 @@
   }
 
   // Pending-review banner state — open dropdown id (one at a time).
-  let openReclassifyFor = $state<string | null>(null);
   let savingBlob = $state<string | null>(null);
 
   /** Downloads through fetch rather than by following a link.
@@ -412,10 +446,6 @@
   }
   function categoryLabel(c: string): string {
     return c === 'use_case' ? 'Use Case' : c.charAt(0).toUpperCase() + c.slice(1);
-  }
-  function otherCategories(current: string): Array<'todo' | 'bug' | 'kb' | 'use_case'> {
-    const all: Array<'todo' | 'bug' | 'kb' | 'use_case'> = ['todo', 'bug', 'kb', 'use_case'];
-    return all.filter((c) => c !== current);
   }
 
   function firstFileAnchor(itemId: string): CodeAnchor | null {
@@ -1041,12 +1071,22 @@
         {#if cardTitle(item)}
           <span class="title" title={cardTitle(item)}>{cardTitle(item)}</span>
         {/if}
-        <span class="state">{item.classification_state}</span>
-        {#if item.proposed_category}
+        <!-- 'classified' is the steady state of nearly every card, so printing
+             it is noise on 90% of the board. Shown only when something is
+             actually off: pending review, unprocessed, failed, skipped. -->
+        {#if item.classification_state !== 'classified'}
+          <span class="state">{item.classification_state}</span>
+        {/if}
+        <!-- The type word only appears when colour is not carrying it. The
+             stripe and body tint say 'todo' faster than the word does. -->
+        {#if item.proposed_category && showsTypeLabel(typeColors)}
           <span class="cat">→ {item.proposed_category}</span>
         {/if}
         {#if item.classification_override}
-          <span class="override" title="User override">★ {item.classification_override}</span>
+          <!-- Glyph alone once colour carries the type; the word would repeat
+               what the stripe already said. -->
+          <span class="override" title="User override: {item.classification_override}"
+            >★{#if showsTypeLabel(typeColors)} {item.classification_override}{/if}</span>
         {/if}
         {#if item.derived_item_id && $draftingCriteria.has(item.derived_item_id)}
           <span class="drafting-badge" title="Drafting acceptance criteria with AI in the background…">✨ drafting</span>
@@ -1062,7 +1102,6 @@
         {#if item.skipped_reason}
           <span class="reason">{item.skipped_reason}</span>
         {/if}
-        <span class="spacer"></span>
         {#if copiedFor[item.id]}
           <span class="copied-flash">{copiedFor[item.id]}</span>
         {/if}
@@ -1081,6 +1120,11 @@
             ><Icon name="anchor" size={12} />{#if fa.provenance === 'agent-suggested'}<span class="prov-suffix" aria-hidden="true">?</span>{/if}</button>
           {/if}
         {/each}
+        <!-- Actions float ABOVE the header rather than sitting in it. Seven
+             buttons plus six badges in a 28px row is what squeezed the title to
+             nothing; an overlay costs zero width, so the title gets the whole
+             row. Trello and Notion solve the same problem the same way. -->
+        <div class="hover-actions" data-grid-nodrag>
         {#if onDecompose && looksLikeDocument(item)}
           <button
             class="icon-btn decompose"
@@ -1133,6 +1177,7 @@
           onclick={(e) => { e.stopPropagation(); onDelete(item); }}
           title="Delete"
         >×</button>
+        </div>
       </header>
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
@@ -1151,54 +1196,12 @@
                   <strong>{categoryLabel(proposed)}</strong>{/if}
               </span>
             </div>
-            <div class="rb-actions">
-              {#if proposed}
-                <button
-                  type="button"
-                  class="rb-accept"
-                  disabled={accepting.has(item.id)}
-                  onclick={(e) => { e.stopPropagation(); accept(item); }}
-                  title="Accept the agent's classification"
-                >{accepting.has(item.id) ? 'Accepting…' : `Accept ${categoryLabel(proposed)}`}</button>
-                <button
-                  type="button"
-                  class="rb-other"
-                  onclick={(e) => {
-                    e.stopPropagation();
-                    openReclassifyFor = openReclassifyFor === item.id ? null : item.id;
-                  }}
-                  aria-expanded={openReclassifyFor === item.id}
-                  title="Re-classify to another category"
-                >Other ▾</button>
-              {:else}
-                <!-- No proposed category yet — only re-classify is meaningful. -->
-                <button
-                  type="button"
-                  class="rb-other"
-                  onclick={(e) => {
-                    e.stopPropagation();
-                    openReclassifyFor = openReclassifyFor === item.id ? null : item.id;
-                  }}
-                  aria-expanded={openReclassifyFor === item.id}
-                >Classify ▾</button>
-              {/if}
-              {#if openReclassifyFor === item.id}
-                <div class="rb-menu" role="menu">
-                  {#each otherCategories(proposed) as cat (cat)}
-                    <button
-                      type="button"
-                      role="menuitem"
-                      class="rb-menu-item"
-                      onclick={(e) => {
-                        e.stopPropagation();
-                        openReclassifyFor = null;
-                        onReclassify(item, cat);
-                      }}
-                    >{categoryLabel(cat)}</button>
-                  {/each}
-                </div>
-              {/if}
-            </div>
+            <!-- One implementation of accept/reclassify/reject, shared with the
+                 list, kanban and calendar views and with Needs review. The block
+                 that used to live here routed through onAccept/onReclassify props
+                 on ScratchpadPane; those are gone rather than left as a second
+                 live path. -->
+            <ClassifyBar item={item} onChanged={onChange} />
           </div>
         {/if}
         {#if item.similar_to_id}
@@ -1340,6 +1343,21 @@
           <div class="annotations">{item.annotations}</div>
         {/if}
       </div>
+      {#each [blockersFor(item)] as bs (item.id)}
+        {#if bs.length}
+          <!-- Its own strip under the body rather than in the header: the
+               header was just cleared for the title, and a chip there would
+               undo that. A scrolling body cannot hide it here either. -->
+          <div class="blocked-strip" title={blockedTooltip(bs)}>
+            <span class="blocked-dot" aria-hidden="true"></span>
+            {#if bs.length === 1}
+              blocked by {bs[0].ref || bs[0].subject}
+            {:else}
+              blocked by {bs.length} items
+            {/if}
+          </div>
+        {/if}
+      {/each}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <span
         class="resize"
@@ -1564,6 +1582,8 @@
     align-items: center;
     gap: 6px;
     padding: 2px 8px;
+    /* Anchors .hover-actions, which is absolutely positioned inside it. */
+    position: relative;
     background: var(--p-1a1a1a);
     font-size: 11px;
     cursor: move;
@@ -1575,18 +1595,94 @@
      app's use_case-amber and bug-red accents. */
   .bar.due-warn { background: color-mix(in srgb, #d4a54d 34%, var(--p-1a1a1a)); }
   .bar.due-urgent { background: color-mix(in srgb, #b04545 40%, var(--p-1a1a1a)); }
-  .spacer { flex: 1; }
   /* UC-9: a user-provided name is the card's heading — render it bold and
      slightly larger than the 12px body text for a clear visual hierarchy. */
   .title {
     color: var(--p-eeeeee);
     font-weight: 700;
-    font-size: 13px;
+    /* 13px -> 15px. Affordable only because the action buttons left the flow
+       and the type word is gone: the title now owns the row. */
+    font-size: 15px;
+    line-height: 1.15;
+    flex: 1 1 auto;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    max-width: 50%;
+    /* No max-width. It used to be 50%, which kept a long title from shoving
+       the state, badges and seven buttons off the row — a real constraint when
+       all of those shared the flow. The buttons are an overlay now and the
+       badges are pinned flex: 0 0 auto, so the title can take everything left
+       over and ellipsise only when it genuinely runs out. The cap was the
+       reason removing the spacer appeared to change nothing. */
   }
+  /* The type stripe. A left border rather than a pseudo-element so it cannot
+     overlap card content or be covered by the body's background. */
+  .item.striped {
+    border-left: 4px solid var(--type-stripe, transparent);
+  }
+
+  /* Blocked reads off the stripe before you read any text: same hue, broken
+     into dashes. Costs no width, which is why it beat a header chip. */
+  .item.striped.blocked {
+    border-left-style: dashed;
+  }
+  /* Blocked but with type colour switched off — still needs to be visible. */
+  .item.blocked:not(.striped) {
+    border-left: 4px dashed var(--p-8a7a4a);
+  }
+
+  .blocked-strip {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 1px 8px 2px;
+    font-size: 10px;
+    color: var(--p-d9b96a);
+    background: color-mix(in srgb, #d4a54d 10%, transparent);
+    border-top: 1px solid var(--p-2a2a2a);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .blocked-dot {
+    flex: none;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--p-d9b96a);
+  }
+
+  /* Actions sit OVER the header, not in it — the whole point. pointer-events
+     off while hidden so an invisible button can never swallow a drag that was
+     meant for the card. focus-within keeps them reachable by keyboard, since
+     hover alone would strand anyone not using a mouse. */
+  .hover-actions {
+    position: absolute;
+    top: 0;
+    right: 2px;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    gap: 1px;
+    padding-left: 10px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 90ms ease-out;
+    /* Fades the title out from under the buttons instead of letting glyphs
+       land on top of text. */
+    background: linear-gradient(to right, transparent, var(--p-1a1a1a) 14px);
+  }
+  .item:hover .hover-actions,
+  .item:focus-within .hover-actions,
+  .item.selected .hover-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .bar > :not(.title):not(.hover-actions) { flex: 0 0 auto; }
+
   .state {
     text-transform: uppercase;
     letter-spacing: 0.5px;
@@ -1690,57 +1786,6 @@
     flex-shrink: 0;
   }
   .rb-text strong { color: var(--p-ffc56c); font-weight: 600; }
-  .rb-actions {
-    display: flex;
-    gap: 4px;
-    align-items: center;
-    position: relative;
-    flex-wrap: wrap;
-  }
-  .rb-accept,
-  .rb-other {
-    background: var(--p-4a3a14);
-    border: 1px solid var(--p-6a5424);
-    color: var(--p-ffe1a3);
-    font-size: 11px;
-    padding: 3px 8px;
-    border-radius: 3px;
-    cursor: pointer;
-    line-height: 1.2;
-  }
-  .rb-accept:hover { background: var(--p-6a5424); color: var(--p-ffffff); }
-  /* UC-35: in-flight Accept — disabled + dimmed so the click reads as taken. */
-  .rb-accept:disabled { opacity: 0.6; cursor: progress; }
-  .rb-other {
-    background: transparent;
-    color: var(--p-d4a54d);
-  }
-  .rb-other:hover { background: var(--p-4a3a14); color: var(--p-ffffff); }
-  .rb-menu {
-    position: absolute;
-    top: 100%;
-    left: 0;
-    margin-top: 2px;
-    background: var(--p-161616);
-    border: 1px solid var(--p-4a3a14);
-    border-radius: 3px;
-    z-index: 50;
-    min-width: 120px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
-    display: flex;
-    flex-direction: column;
-  }
-  .rb-menu-item {
-    background: transparent;
-    border: none;
-    color: var(--p-dddddd);
-    text-align: left;
-    padding: 6px 10px;
-    font-size: 12px;
-    cursor: pointer;
-    border-radius: 0;
-  }
-  .rb-menu-item:hover { background: var(--p-2a2310); color: var(--p-ffc56c); }
   .dedup-banner {
     background: var(--p-2a1e3a);
     border-bottom: 1px solid var(--p-4a3a5a);

@@ -36,6 +36,7 @@
   import ScratchpadPane from './components/ScratchpadPane.svelte';
   import Drawer from './components/Drawer.svelte';
   import DialogHost from './components/DialogHost.svelte';
+  import SetupScreen from './components/SetupScreen.svelte';
   import NeedsReviewPanel from './components/NeedsReviewPanel.svelte';
   import Modal from './components/Modal.svelte';
   import Settings from './components/Settings.svelte';
@@ -64,6 +65,14 @@
   import JobSubmit from './components/JobSubmit.svelte';
   import { orderProjects } from './lib/uiPrefs.svelte';
   import ProposalReview from './components/ProposalReview.svelte';
+  import PaneFrame from './components/PaneFrame.svelte';
+  import { paneDef, SLOTS, type SlotID } from './lib/layout';
+  import {
+    initLayout, visibleSlots, activePane, paneSize as paneWidth,
+    openPane as openPaneById, closePane as closePaneById,
+    draggingPane, endDrag, movePane as movePaneTo,
+    setPaneSize as setPaneWidth, flushPaneSize, togglePane, isPaneOpen,
+  } from './lib/layoutStore.svelte';
   import CodeAnalysisPanel from './components/CodeAnalysisPanel.svelte';
   import HelpPanel from './components/HelpPanel.svelte';
   import CreditsModal from './components/CreditsModal.svelte';
@@ -310,11 +319,15 @@
   let errorMsg = $state<string>('');
   let hiddenCount = $derived(items.filter((i) => i.hidden).length);
 
-  let drawerOpen = $state(true);
+  // Likewise no drawer mirror — the hamburger reads the layout. DRAWER_KEY is
+  // still written so an older build downgraded to still finds its setting.
   let drawerWidth = $state(DRAWER_WIDTH_DEFAULT);
   let settingsOpen = $state(false);
   let adminOpen = $state(false);
   let statsOpen = $state(false);
+  // First-run setup: shown until Ollama answers and both models exist, or the
+  // user skips for this session. null = not needed / not yet checked.
+  let setupStatus = $state<api.SetupStatus | null>(null);
   // Bumped when the settings modal closes; ScratchpadPane reloads
   // canvas-affecting preferences (type colors) off it.
   let settingsTick = $state(0);
@@ -438,8 +451,11 @@
   // Needs Review — the unified attention surface (classification + sign-off).
   // The badge count is refreshed alongside the normal data cycle; both halves
   // are cheap reads and failures stay silent (the panel shows its own errors).
-  let needsReviewOpen = $state(false);
   let needsReviewCount = $state(0);
+  // Bumped at the end of every data cycle so the Needs review PANE reloads. A
+  // modal reloaded each time it was opened; one that stays open has to be told
+  // the world moved. The cycle is already SSE-debounced, so this is not a poll.
+  let reviewTick = $state(0);
   // Sync the shared "drafting criteria" set from the server (the authoritative
   // list of items whose background Draft-with-AI job is still running). Runs on
   // every refresh — completion publishes ItemsChanged, so this clears finished
@@ -452,6 +468,49 @@
       /* best-effort — the badge is advisory */
     }
   }
+
+  // Dependency readiness. Project-scoped and cheap, and it is the single
+  // source for "is this blocked" across every view — canvas, list and kanban
+  // all read the same map rather than each deciding for itself.
+  let readiness = $state<api.ReadinessResponse | null>(null);
+  async function refreshReadiness() {
+    if (!activeProjectId) { readiness = null; return; }
+    try {
+      readiness = await api.getReadiness(activeProjectId);
+    } catch {
+      readiness = null; // advisory — a card simply shows no blocker chip
+    }
+  }
+
+  /** source scratchpad item id -> its hard blockers.
+   *
+   *  Two hops, because dependencies link DERIVED items (todo/bug/kb/use_case)
+   *  while the canvas draws scratchpad items: source -> derived id -> blockers.
+   *  A pending-review card has no derived item yet, so it can carry no blocker
+   *  chip — correct, since nothing can depend on an item that has not been
+   *  classified into anything. */
+  const blockedBySource = $derived.by<Map<string, api.Blocker[]>>(() => {
+    const out = new Map<string, api.Blocker[]>();
+    if (!readiness?.has_ordering) return out;
+    const byDerived = new Map<string, api.Blocker[]>();
+    for (const it of [...(readiness.blocked ?? []), ...(readiness.ready ?? [])]) {
+      // Only HARD blockers that are still unsettled. 'informs' stays out of the
+      // card per Rich — if both showed, most cards would carry a chip and the
+      // chip would stop meaning anything.
+      const hard = (it.blocked_by ?? []).filter((b) => !b.advisory);
+      if (hard.length) byDerived.set(it.id, hard);
+    }
+    const link = (src: string | undefined, id: string) => {
+      if (!src) return;
+      const b = byDerived.get(id);
+      if (b) out.set(src, b);
+    };
+    for (const t of padTodos) link(t.source_item_id, t.id);
+    for (const b of padBugs) link(b.source_item_id, b.id);
+    for (const k of padKb) link(k.source_item_id, k.id);
+    for (const u of padUseCases) link(u.source_item_id, u.id);
+    return out;
+  });
 
   async function refreshNeedsReviewCount() {
     try {
@@ -473,8 +532,12 @@
   }
   // The job monitor is a main view, not a settings tab: watching a 40-minute
   // decomposition is not configuration.
-  let jobsOpen = $state(false);
-  function toggleJobs() { jobsOpen = !jobsOpen; }
+  // No `jobsOpen` mirror: the toolbar reads isPaneOpen('jobs') directly. A
+  // mirrored copy went stale the moment the pane was closed from its own ×,
+  // which is exactly what happened — the button stayed lit over a closed pane.
+  function toggleJobs() {
+    togglePane('jobs');
+  }
   // Starting a job is a separate act from watching one, so it is a separate
   // window: the panel is glanced at constantly, the dialog is used rarely.
   let submitOpen = $state(false);
@@ -604,20 +667,90 @@
   // the far right — opposite the code window.
   const DOCK_WIDTH = 280;
   const JOBS_WIDTH = 420;
+  // The dock appears when something is docked and leaves when nothing is — it
+  // was never a thing you toggled. Kept that way: an $effect syncs the pane to
+  // the item count rather than the user opening it.
   const dockOpen = $derived(dock.items.length > 0);
+  $effect(() => {
+    if (dockOpen && !isPaneOpen('dock')) openPaneById('dock');
+    if (!dockOpen && isPaneOpen('dock')) closePaneById('dock');
+  });
   // Order left→right: drawer │ code │ dock │ canvas(1fr). The dock sits right
   // of the code window and left of the canvas, so the item you followed a link
   // into stays adjacent to its code.
+  // Grid columns, derived from the layout rather than from a boolean per panel.
+  //
+  // Left slot, canvas, right slot. The bottom slot is a ROW below this grid, not
+  // a column, so it is handled by the wrapper rather than here.
+  // One resizer for every pane, parameterised. There were two near-identical
+  // pairs before (drawer, code canvas); a third and fourth pane would have made
+  // it four. Axis matters: the bottom slot sizes by HEIGHT and grows upward, so
+  // dragging up must increase it.
+  let resizingPane = $state<string | null>(null);
+  // Tracked so the grab cursor matches the axis: dragging the bottom handle
+  // must not put col-resize over the whole panes row.
+  let resizingAxis = $state<'x' | 'y'>('x');
+  let resizeStart = 0;
+  let resizeFrom = 0;
+
+  function startPaneResize(e: PointerEvent, id: string, axis: 'x' | 'y') {
+    resizingPane = id;
+    resizingAxis = axis;
+    resizeStart = axis === 'x' ? e.clientX : e.clientY;
+    resizeFrom = paneWidth(id);
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    e.preventDefault();
+  }
+
+  function paneResizeMove(e: PointerEvent, axis: 'x' | 'y', invert: boolean) {
+    if (!resizingPane) return;
+    const now = axis === 'x' ? e.clientX : e.clientY;
+    const delta = (now - resizeStart) * (invert ? -1 : 1);
+    setPaneWidth(resizingPane, resizeFrom + delta);
+  }
+
+  function endPaneResize(e: PointerEvent) {
+    if (!resizingPane) return;
+    resizingPane = null;
+    // Commit now rather than waiting out the debounce: letting go should save.
+    flushPaneSize();
+    try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* already gone */ }
+  }
+
+  // A slot with no panes does not render — correct for a normal layout, and a
+  // dead end while dragging: you cannot drop onto something that is not there,
+  // so the bottom slot would be unreachable by drag (the Move menu could still
+  // get you there, which is why this only showed up now). While a drag is in
+  // flight, every empty slot offers itself as a strip.
+  const emptySlots = $derived.by(() =>
+    draggingPane() ? SLOTS.filter((s) => !visibleSlots().includes(s)) : [],
+  );
+
+  function dropInto(e: DragEvent, s: SlotID) {
+    e.preventDefault();
+    const id = e.dataTransfer?.getData('application/x-codedistill-pane') || draggingPane();
+    endDrag();
+    if (id) movePaneTo(id, s);
+  }
+
+  function allowDrop(e: DragEvent) {
+    if (!draggingPane()) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+  }
+
   const paneColumns = $derived.by(() => {
+    const vis = visibleSlots();
     const cols: string[] = [];
-    if (drawerOpen) cols.push(`${drawerWidth}px`, '5px');
-    if (codeCanvasOpen) cols.push(`${codeCanvasWidth}px`, '5px');
-    if (dockOpen) cols.push(`${DOCK_WIDTH}px`, '5px');
+    if (vis.includes('left')) {
+      const id = activePane('left');
+      cols.push(`${id ? paneWidth(id) : 240}px`, '5px');
+    }
     cols.push('1fr');
-    // Jobs docks on the RIGHT of the canvas, as a real column in this grid
-    // rather than a box floating over it. It is something you glance at while
-    // working — a fixed-position overlay is a modal wearing a panel's clothes.
-    if (jobsOpen) cols.push('5px', `${JOBS_WIDTH}px`);
+    if (vis.includes('right')) {
+      const id = activePane('right');
+      cols.push('5px', `${id ? paneWidth(id) : 400}px`);
+    }
     return cols.join(' ');
   });
   // Follow a code link from an item detail: dock the item (keep it visible)
@@ -986,7 +1119,9 @@
         latestNotes = [];
       }
       if (listsOpen) await loadProjectLists();
+      void refreshReadiness();
       void refreshNeedsReviewCount();
+      reviewTick += 1;
       void refreshJobsCount();
       void refreshDrafting();
       errorMsg = '';
@@ -1060,8 +1195,10 @@
   }
 
   function toggleDrawer() {
-    drawerOpen = !drawerOpen;
-    saveUserBool(DRAWER_KEY, drawerOpen);
+    // Through the layout now: the drawer is the 'tree' pane. The old boolean is
+    // still written so anything else reading it stays consistent until it goes.
+    togglePane('tree');
+    saveUserBool(DRAWER_KEY, isPaneOpen('tree'));
   }
 
   // SSE channel — the primary update path. Mutation handlers on
@@ -1146,7 +1283,6 @@
       // it resolves use the default ('ctrl-enter'), matching pre-setting
       // behavior, so nothing breaks during the few ms it's outstanding.
       loadSubmitShortcut().catch(() => {});
-      drawerOpen = await loadUserBool(DRAWER_KEY, true);
       drawerWidth = Math.max(
         DRAWER_WIDTH_MIN,
         Math.min(DRAWER_WIDTH_MAX, await loadUserNum(DRAWER_WIDTH_KEY, DRAWER_WIDTH_DEFAULT)),
@@ -1167,6 +1303,18 @@
       } catch {
         // Transport failure; loadProjects below still falls back to the first
         // project in the list.
+      }
+      // Ask what the server is missing before anything else paints: a fresh
+      // machine has no Ollama and no models, and the rest of the UI would only
+      // show empty lists and failed classifications.
+      try {
+        const st = await api.getSetupStatus();
+        const have = (m: string) => st.models.installed.some((i) => i === m || i === m + ':latest');
+        if (!st.completed && (!st.ollama.reachable || !have(st.models.classifier) || !have(st.models.embed))) {
+          setupStatus = st;
+        }
+      } catch {
+        // Older server without the endpoint, or a transport failure: no setup screen.
       }
       await loadProjects();
       await Promise.all([refresh(), loadCodeCanvasState(activeProjectId)]);
@@ -1288,8 +1436,8 @@
       class="hamburger"
       onclick={toggleDrawer}
       aria-label="Toggle navigation drawer"
-      aria-expanded={drawerOpen}
-      title={drawerOpen ? 'Hide drawer' : 'Show drawer'}
+      aria-expanded={isPaneOpen('tree')}
+      title={isPaneOpen('tree') ? 'Hide drawer' : 'Show drawer'}
     >
       <span aria-hidden="true">☰</span>
     </button>
@@ -1375,22 +1523,22 @@
     <div class="header-actions">
       <button
         class="lists-btn"
-        class:on={needsReviewOpen}
-        onclick={() => (needsReviewOpen = !needsReviewOpen)}
+        class:on={isPaneOpen('inbox')}
+        onclick={() => togglePane('inbox')}
         title="Items waiting on your judgment — classification accepts and implementation sign-offs"
         aria-label="Toggle needs-review panel"
-        aria-pressed={needsReviewOpen}
+        aria-pressed={isPaneOpen('inbox')}
       >
         <span class="btn-ico" style="--sig:#22c55e"><Icon name="check" size={15} /></span><span class="btn-lbl">Needs review</span>
         {#if needsReviewCount > 0}<span class="badge">{needsReviewCount}</span>{/if}
       </button>
       <button
         class="lists-btn"
-        class:on={jobsOpen}
+        class:on={isPaneOpen('jobs')}
         onclick={toggleJobs}
         title="Jobs — what is running, on which model, and how far along"
         aria-label="Toggle job monitor"
-        aria-pressed={jobsOpen}
+        aria-pressed={isPaneOpen('jobs')}
       >
         <span class="btn-ico" style="--sig:#38bdf8"><Icon name="jobs" size={15} /></span><span class="btn-lbl">Jobs</span>
         {#if jobsRunningCount > 0}<span class="badge">{jobsRunningCount}</span>{/if}
@@ -1488,6 +1636,9 @@
   </header>
 
   <StatsModal open={statsOpen} onClose={() => (statsOpen = false)} />
+  {#if setupStatus}
+    <SetupScreen status={setupStatus} onDone={() => { setupStatus = null; void refresh(); }} />
+  {/if}
 
   <Modal
     open={settingsOpen}
@@ -1518,66 +1669,87 @@
     onClose={() => (creditsOpen = false)}
   />
 
-  <div
-    class="panes"
-    class:resizing={resizing || resizingCode}
-    style:grid-template-columns={paneColumns}
-  >
-    {#if drawerOpen}
-      <aside class="drawer-aside">
-        <Drawer
-          activeProject={activeProject}
-          onProjectImported={projectCreated}
-          onOpenFile={openFileInCanvas}
-          {filesRefreshTick}
-        />
-      </aside>
+<!-- One snippet for every pane, so PaneFrame never learns what a pane
+     contains and each component keeps the props it always had. -->
+{#snippet paneContent(id: string)}
+  {#if id === 'tree'}
+    <Drawer
+      activeProject={activeProject}
+      onProjectImported={projectCreated}
+      onOpenFile={openFileInCanvas}
+    />
+  {:else if id === 'code'}
+    <CodeCanvas
+      projectId={activeProjectId}
+      tabs={codeTabs}
+      activeIndex={codeActiveIndex}
+      onActivate={activateCodeTab}
+      onClose={closeCodeTab}
+      onHide={hideCodeCanvas}
+      onAnchorClick={handleAnchorClick}
+      onCreateItem={createItemFromCodeSelection}
+      hasActiveScratchpad={!!activeScratchpadId}
+      {pendingHighlight}
+      onHighlightConsumed={() => (pendingHighlight = null)}
+      externalHover={hoveredCardAnchor}
+    />
+  {:else if id === 'dock'}
+    <DockedItems onOpenFile={openFileInCanvas} onOpenFull={openDockedFull} />
+  {:else if id === 'inbox'}
+    <NeedsReviewPanel
+      projectId={activeProjectId}
+      projectName={activeProject?.name ?? ''}
+      tick={reviewTick}
+      onOpenItem={(ownerType: string, ownerId: string) =>
+        void openDockedFull(ownerType as DockedItem['ownerType'], ownerId)}
+      onChanged={() => { void refreshNeedsReviewCount(); scheduleRefresh(); }}
+    />
+  {:else if id === 'jobs'}
+    <JobMonitor
+      projectId={activeProjectId}
+      onNewJob={() => (submitOpen = true)}
+      onReview={(rid) => (reviewJobId = rid)}
+      reloadKey={jobsReload}
+    />
+  {/if}
+{/snippet}
+
+    <!-- The shell: a panes row, and the bottom slot beneath it.
+         Two levels because the bottom slot is a ROW — it spans the full width
+         under everything, which is what makes a terminal or command surface
+         usable. A column could never do that. -->
+    <div class="shell" class:dragging={!!draggingPane()}>
+      {#each emptySlots as s (s)}
+        <!-- Positioned over the shell rather than in the flow: a strip that took
+             layout space would reflow everything the instant a drag started,
+             moving the tab out from under the pointer. -->
+        <div
+          class="empty-slot {s}"
+          role="presentation"
+          ondragover={allowDrop}
+          ondrop={(e) => dropInto(e, s)}
+        ><span>Drop here</span></div>
+      {/each}
       <div
-        class="resize-handle"
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="Resize drawer"
-        onpointerdown={startResize}
-        onpointermove={onResizeMove}
-        onpointerup={endResize}
-        onpointercancel={endResize}
-      ></div>
-    {/if}
-    {#if codeCanvasOpen}
-      <aside class="code-aside">
-        <CodeCanvas
-          projectId={activeProjectId}
-          tabs={codeTabs}
-          activeIndex={codeActiveIndex}
-          onActivate={activateCodeTab}
-          onClose={closeCodeTab}
-          onHide={hideCodeCanvas}
-          onAnchorClick={handleAnchorClick}
-          onCreateItem={createItemFromCodeSelection}
-          hasActiveScratchpad={!!activeScratchpadId}
-          {pendingHighlight}
-          onHighlightConsumed={() => (pendingHighlight = null)}
-          externalHover={hoveredCardAnchor}
-        />
-      </aside>
-      <div
-        class="resize-handle"
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="Resize code canvas"
-        onpointerdown={startResizeCode}
-        onpointermove={onResizeCodeMove}
-        onpointerup={endResizeCode}
-        onpointercancel={endResizeCode}
-      ></div>
-    {/if}
-    {#if dockOpen}
-      <aside class="dock-aside">
-        <DockedItems onOpenFile={openFileInCanvas} onOpenFull={openDockedFull} />
-      </aside>
-      <div class="resize-handle-static" aria-hidden="true"></div>
-    {/if}
-    <section class="scratchpad">
+        class="panes"
+        class:resizing={!!resizingPane && resizingAxis === 'x'}
+        style:grid-template-columns={paneColumns}
+      >
+        {#if visibleSlots().includes('left')}
+          <PaneFrame slot="left" content={paneContent} />
+          <div
+            class="resize-handle"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize left pane"
+            onpointerdown={(e) => { const id = activePane('left'); if (id) startPaneResize(e, id, 'x'); }}
+            onpointermove={(e) => paneResizeMove(e, 'x', false)}
+            onpointerup={endPaneResize}
+            onpointercancel={endPaneResize}
+          ></div>
+        {/if}
+
+        <section class="scratchpad">
       <ScratchpadPane
         {items}
         {scratchpads}
@@ -1585,6 +1757,7 @@
         projectId={activeProjectId}
         dedupEnabled={licensed('dedup')}
     canvasViewsEnabled={licensed('canvas_views')}
+    {blockedBySource}
     {dueDateBySource}
     {tagsBySource}
     onOpenDerived={openDerivedFromItem}
@@ -1604,20 +1777,39 @@
           submitOpen = true;
         }}
       />
-    </section>
-    {#if jobsOpen}
-      <div class="resize-handle-static" aria-hidden="true"></div>
-      <aside class="jobs-aside">
-        <JobMonitor
-          projectId={activeProjectId}
-          onClose={toggleJobs}
-          onNewJob={() => (submitOpen = true)}
-          onReview={(id) => (reviewJobId = id)}
-          reloadKey={jobsReload}
-        />
-      </aside>
-    {/if}
-  </div>
+        </section>
+
+        {#if visibleSlots().includes('right')}
+          <div
+            class="resize-handle"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize right pane"
+            onpointerdown={(e) => { const id = activePane('right'); if (id) startPaneResize(e, id, 'x'); }}
+            onpointermove={(e) => paneResizeMove(e, 'x', true)}
+            onpointerup={endPaneResize}
+            onpointercancel={endPaneResize}
+          ></div>
+          <PaneFrame slot="right" content={paneContent} />
+        {/if}
+      </div>
+
+      {#if visibleSlots().includes('bottom')}
+        <div
+          class="resize-handle horizontal"
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="Resize bottom pane"
+          onpointerdown={(e) => { const id = activePane('bottom'); if (id) startPaneResize(e, id, 'y'); }}
+          onpointermove={(e) => paneResizeMove(e, 'y', true)}
+          onpointerup={endPaneResize}
+          onpointercancel={endPaneResize}
+        ></div>
+        <div class="bottom-slot" style:height={`${paneWidth(activePane('bottom') ?? '') || 200}px`}>
+          <PaneFrame slot="bottom" content={paneContent} />
+        </div>
+      {/if}
+    </div>
 
   <!-- Detail modals — owned by App so the code canvas can open them too. -->
   <TodoDetail
@@ -1691,16 +1883,10 @@
     projectId={activeProjectId}
     projectName={activeProject?.name ?? ''}
     onClose={closeDashboard}
-    onOpenNeedsReview={() => { dashboardOpen = false; needsReviewOpen = true; }}
+    onOpenNeedsReview={() => { dashboardOpen = false; openPaneById('inbox'); }}
   />
 
-  <NeedsReviewPanel
-    open={needsReviewOpen}
-    projectId={activeProjectId}
-    projectName={activeProject?.name ?? ''}
-    onClose={() => (needsReviewOpen = false)}
-    onChanged={() => { void refreshNeedsReviewCount(); scheduleRefresh(); }}
-  />
+
 
   <JobSubmit
     projectId={activeProjectId}
@@ -1711,7 +1897,7 @@
     onSubmitted={() => {
       // Open the panel on submit: the run has to be visible somewhere, and
       // starting one only to have nothing change is how a button looks broken.
-      jobsOpen = true;
+      openPaneById('jobs');
       jobsReload += 1;
     }}
   />
@@ -1930,6 +2116,35 @@
     text-align: center;
     line-height: 1.3;
   }
+  /* Two levels: a panes row, and the bottom slot under it.
+     The bottom slot is a ROW because it must span the full width — a terminal
+     or command surface squeezed into a column is unusable. */
+  .shell {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    position: relative;
+  }
+
+  /* Only present during a drag, so it can sit over the content without ever
+     being in the way the rest of the time. */
+  .empty-slot {
+    position: absolute;
+    z-index: 30;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(90, 140, 200, 0.14);
+    border: 2px dashed var(--accent);
+    color: var(--p-cccccc);
+    font-size: 0.75rem;
+    pointer-events: auto;
+  }
+  .empty-slot span { opacity: 0.85; }
+  .empty-slot.left { top: 0; bottom: 0; left: 0; width: 170px; }
+  .empty-slot.right { top: 0; bottom: 0; right: 0; width: 170px; }
+  .empty-slot.bottom { left: 0; right: 0; bottom: 0; height: 110px; }
   .panes {
     flex: 1;
     display: grid;
@@ -1938,6 +2153,17 @@
   .panes.resizing {
     cursor: col-resize;
     user-select: none;
+  }
+  .bottom-slot {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    border-top: 1px solid var(--border);
+  }
+  .resize-handle.horizontal {
+    height: 5px;
+    width: auto;
+    cursor: row-resize;
   }
   .drawer-aside,
   .code-aside {

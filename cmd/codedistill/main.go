@@ -505,7 +505,7 @@ func cmdClassify(dbPath, model, endpoint, modelAPI, content, override string) er
 		ollama.WithProtocol(ollama.ParseProtocol(modelAPI)))
 	classifier := &agent.OllamaClassifier{
 		GenerateModel: cl.GenerateJSONWithModel,
-		ModelFor:      projectModel(store, "classifier"),
+		ModelFor:      withGlobalModel(store, projectModel(store, "classifier")),
 	}
 	ag := agent.New(store, classifier)
 
@@ -593,18 +593,37 @@ func cmdServe(dbPath, model, endpoint, modelAPI, addr, appWindow string, ollamaA
 	// in-flight classifications can finish. This defer is the backstop for
 	// abnormal exits; on the clean path it is a no-op because the explicit call
 	// already ran.
-	var stopOnce sync.Once
-	stopOllamaOnce := func() { stopOnce.Do(func() { stopOllama() }) }
+	var (
+		stopOnce     sync.Once
+		stopMu       sync.Mutex // guards stopOllama, which setupStart may replace later
+		setupStart   func(ctx context.Context) error
+		setupBinary  func() (string, error)
+		ollamaFailed string
+	)
+	stopOllamaOnce := func() { stopOnce.Do(func() { stopMu.Lock(); f := stopOllama; stopMu.Unlock(); f() }) }
 	defer stopOllamaOnce()
 	// Only autostart the local Ollama binary when we're actually talking to
 	// Ollama — an OpenAI-compatible endpoint is the user's own running server.
+	// A missing Ollama is no longer fatal: serve comes up without it and the
+	// UI's first-run screen says what to install, then asks us to try again
+	// through setupStart (POST /api/v1/setup/ollama/start).
 	if ollamaAutostart && ollama.ParseProtocol(modelAPI) == ollama.ProtocolOllama {
 		sup := &ollama.Supervisor{Endpoint: endpoint, BinPath: ollamaBin, Log: logger}
-		stop, err := ensureOllamaRunning(ctx, sup)
-		if err != nil {
-			return fmt.Errorf("ollama supervisor: %w", err)
+		setupBinary = sup.Binary
+		setupStart = func(ctx context.Context) error {
+			stop, err := ensureOllamaRunning(ctx, sup)
+			if err != nil {
+				return err
+			}
+			stopMu.Lock()
+			stopOllama = stop
+			stopMu.Unlock()
+			return nil
 		}
-		stopOllama = stop
+		if err := setupStart(ctx); err != nil {
+			ollamaFailed = err.Error()
+			logger.Warn("ollama is not available; the UI will offer setup", "err", err)
+		}
 	}
 
 	cl := ollama.New(ollama.WithModel(model), ollama.WithEndpoint(endpoint),
@@ -614,7 +633,7 @@ func cmdServe(dbPath, model, endpoint, modelAPI, addr, appWindow string, ollamaA
 	// global default. Local-only — models come from the machine's Ollama.
 	classifier := &agent.OllamaClassifier{
 		GenerateModel: cl.GenerateJSONWithModel,
-		ModelFor:      projectModel(store, "classifier"),
+		ModelFor:      withGlobalModel(store, projectModel(store, "classifier")),
 	}
 	// Separate Ollama client for the embedding model — the API takes a
 	// model per call but the client wraps a single configured one, so a
@@ -840,6 +859,10 @@ func cmdServe(dbPath, model, endpoint, modelAPI, addr, appWindow string, ollamaA
 		WithEventBus(bus).
 		WithVerifier(verifier).
 		WithModelLister(cl.ListModels).
+		WithSetup(api.SetupDeps{
+			Endpoint: endpoint, DefaultModel: model, EmbedModel: ollama.DefaultEmbedModel,
+			DataDir: filepath.Dir(dbPath), Binary: setupBinary, Start: setupStart, StartupError: ollamaFailed,
+		}).
 		WithSecureCookies(secureCookies)
 	if grouper != nil {
 		apiSrv = apiSrv.WithDuplicateGrouper(grouper)
@@ -1421,6 +1444,24 @@ func projectFileTreeLookup(store storage.Storage) agent.ProjectFileTreeFunc {
 // model.<role> setting (the model-provider arc). Empty result → the role uses
 // the global default model. Reads are cheap per-call SQLite lookups; a missing
 // setting or unparseable value falls back silently.
+// withGlobalModel falls back from the project's model setting to the model the
+// user chose on the first-run screen (user setting model.classifier). An empty
+// result still means "the -model flag", as before.
+func withGlobalModel(store storage.Storage, project agent.ModelForFunc) agent.ModelForFunc {
+	return func(projectID string) string {
+		if v := project(projectID); v != "" {
+			return v
+		}
+		st, err := store.GetUserSetting(context.Background(), "local", api.SetupKeyModel)
+		if err != nil {
+			return ""
+		}
+		var v string
+		_ = json.Unmarshal(st.Value, &v)
+		return strings.TrimSpace(v)
+	}
+}
+
 func projectModel(store storage.Storage, role string) agent.ModelForFunc {
 	key := "model." + role
 	return func(projectID string) string {

@@ -143,11 +143,20 @@ func (s *Server) listItems(w http.ResponseWriter, r *http.Request) {
 // archiveItem / unarchiveItem toggle an item's archived state (backlog item #19):
 // off the canvas but retained + searchable; un-archive restores it.
 func (s *Server) archiveItem(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	groupID := ""
+	if item, err := s.store.GetScratchpadItem(r.Context(), id); err == nil {
+		groupID = item.GroupID
+	}
 	now := time.Now().UTC()
-	if err := s.store.SetScratchpadItemArchived(r.Context(), r.PathValue("id"), &now); err != nil {
+	if err := s.store.SetScratchpadItemArchived(r.Context(), id, &now); err != nil {
 		writeErr(w, statusFor(err), err)
 		return
 	}
+	// An archived member is off the canvas, so the group may have dropped
+	// below two. Archiving retains the row and its group_id; dissolving the
+	// group here is what keeps the frame from outliving its contents.
+	s.maybeDissolveGroup(r.Context(), groupID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -616,7 +625,7 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request) {
 	// when the previous id is the same as the new one (no move)
 	// and when the previous id is empty (no prior group).
 	if req.GroupID != nil && previousGroupID != "" && previousGroupID != item.GroupID {
-		s.maybeDeleteEmptyGroup(r.Context(), previousGroupID)
+		s.maybeDissolveGroup(r.Context(), previousGroupID)
 	}
 	// Lineage (UC-5): record the content-bearing edits a user cares to
 	// trace. Geometry/visibility patches are intentionally not logged.
@@ -641,11 +650,30 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, item)
 }
 
-// maybeDeleteEmptyGroup deletes a group item when no scratchpad
-// items reference it via group_id. Best-effort — failures are
-// logged, not returned, since this is a downstream cleanup of an
-// otherwise-successful update.
-func (s *Server) maybeDeleteEmptyGroup(ctx context.Context, groupID string) {
+// maybeDissolveGroup deletes a group that no longer has enough members on the
+// canvas to BE a group. A group of one is not a group — the frame is just
+// chrome around a single card (Rich, 2026-10-17). The old threshold was zero,
+// so a one-member group survived by design.
+//
+// Membership counts only members that are NOT archived. Archiving takes an item
+// off the canvas, so an archived member has effectively left the group; without
+// this, archiving a group down to one visible card could never dissolve it and
+// the frame would lie about what it contains. The cost, accepted deliberately:
+// archiving destroys the group's name and note, and un-archiving yields a loose
+// ungrouped item rather than resurrecting the group.
+//
+// Hidden members still COUNT as members. Hiding is automatic for terminal items
+// rather than a user's decision, and letting it dissolve groups would mean
+// finishing a todo silently rearranged someone's canvas.
+//
+// Deleting the group row clears each surviving member's group_id through the
+// ON DELETE SET NULL FK (migration 0027), so dissolution never leaves a member
+// pointing at a group that is gone. That FK is what made the old zero-member
+// threshold safe, and it is what makes the one-member threshold safe now.
+//
+// Best-effort: failures are logged, not returned, since this is downstream
+// cleanup of an otherwise-successful delete, archive or update.
+func (s *Server) maybeDissolveGroup(ctx context.Context, groupID string) {
 	if groupID == "" {
 		return
 	}
@@ -659,30 +687,44 @@ func (s *Server) maybeDeleteEmptyGroup(ctx context.Context, groupID string) {
 		// item id (caller bug). Don't delete a real item under us.
 		return
 	}
-	// List the scratchpad's items, count children referencing this
-	// group. Using the existing list method since there's no
-	// dedicated "count children" call yet; for v1 the scratchpad's
-	// item count is small enough that this is cheap.
+	// Using the existing list method since there's no dedicated "count
+	// children" call yet; for v1 a scratchpad's item count is small enough
+	// that this is cheap.
 	siblings, err := s.store.ListScratchpadItems(ctx, group.ScratchpadID)
 	if err != nil {
-		s.log.Warn("group auto-delete: list siblings failed", "group_id", groupID, "err", err)
+		s.log.Warn("group dissolve: list siblings failed", "group_id", groupID, "err", err)
 		return
 	}
+	onCanvas := 0
 	for _, sib := range siblings {
-		if sib.GroupID == groupID {
-			return // group still has children
+		if sib.GroupID != groupID || sib.ArchivedAt != nil {
+			continue
+		}
+		onCanvas++
+		if onCanvas > 1 {
+			return // still a real group
 		}
 	}
 	if err := s.store.DeleteScratchpadItem(ctx, groupID); err != nil {
-		s.log.Warn("group auto-delete: delete failed", "group_id", groupID, "err", err)
+		s.log.Warn("group dissolve: delete failed", "group_id", groupID, "err", err)
 	}
 }
 
 func (s *Server) deleteItem(w http.ResponseWriter, r *http.Request) {
-	if err := s.store.DeleteScratchpadItem(r.Context(), r.PathValue("id")); err != nil {
+	id := r.PathValue("id")
+	// Read the group BEFORE deleting: afterwards the ON DELETE SET NULL FK has
+	// already cleared this item's group_id, so there is nothing left to trace
+	// back to. This path previously did no group cleanup at all, which is why
+	// deleting every member left an empty frame behind.
+	groupID := ""
+	if item, err := s.store.GetScratchpadItem(r.Context(), id); err == nil {
+		groupID = item.GroupID
+	}
+	if err := s.store.DeleteScratchpadItem(r.Context(), id); err != nil {
 		writeErr(w, statusFor(err), err)
 		return
 	}
+	s.maybeDissolveGroup(r.Context(), groupID)
 	s.bus.Publish(events.ItemsChanged)
 	writeEmpty(w, http.StatusNoContent)
 }

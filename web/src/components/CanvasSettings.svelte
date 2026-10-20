@@ -18,6 +18,7 @@
     saveTypeColors,
     DEFAULT_TYPE_COLORS,
     type TypeColorsConfig,
+    type TypeIndicator,
   } from '../lib/typeColors';
   import {
     loadDueDateColors,
@@ -57,8 +58,28 @@
     tc = { ...tc, colors: { ...tc.colors, [type]: value } };
     saveTypeColors(tc);
   }
+  // Four hues are hard to separate at a 30% body blend and easy at full
+  // strength, so the stripe is the workhorse and the tint is reinforcement.
+  // 'Type word' exists because color alone excludes anyone who cannot
+  // distinguish the red/violet pair — roughly 8% of men.
+  const TYPE_INDICATORS: { mode: TypeIndicator; label: string; hint: string }[] = [
+    { mode: 'both', label: 'Stripe + tint',
+      hint: 'A full-strength color bar down the left edge, plus a subtle background tint. The default — easiest to tell apart at a glance.' },
+    { mode: 'stripe', label: 'Stripe only',
+      hint: 'Just the left edge bar. Keeps card backgrounds uniform.' },
+    { mode: 'tint', label: 'Tint only',
+      hint: 'Just the background blend — the original behavior. Subtler, and harder to distinguish with four types.' },
+    { mode: 'label', label: 'Type word',
+      hint: 'Prints the type in the header instead of relying on color. Use this if color is not a reliable cue for you; it costs some title room.' },
+  ];
+
+  function tcIndicator(mode: TypeIndicator) {
+    tc = { ...tc, indicator: mode };
+    saveTypeColors(tc);
+  }
+
   function tcReset() {
-    tc = { ...tc, colors: { ...DEFAULT_TYPE_COLORS.colors } };
+    tc = { ...tc, colors: { ...DEFAULT_TYPE_COLORS.colors }, indicator: DEFAULT_TYPE_COLORS.indicator };
     saveTypeColors(tc);
   }
 </script>
@@ -74,11 +95,25 @@
       Color cards by item type
     </label>
     <p class="hint sub">
-      Tints each card's background by its classified type (~30% blend,
-      so text stays readable in both themes). Groups get a fixed gray.
-      Changes apply when you close settings.
+      Color replaces the type word in the card header, which frees the whole
+      row for the title. Turn it off and the word comes back. Groups get a
+      fixed gray. Changes apply when you close settings.
     </p>
     {#if tc.enabled}
+      <div class="indicator-row" role="radiogroup" aria-label="How a card shows its type">
+        {#each TYPE_INDICATORS as ti (ti.mode)}
+          <button
+            type="button"
+            class:on={(tc.indicator ?? 'both') === ti.mode}
+            aria-pressed={(tc.indicator ?? 'both') === ti.mode}
+            onclick={() => tcIndicator(ti.mode)}
+            title={ti.hint}
+          >{ti.label}</button>
+        {/each}
+      </div>
+      <p class="hint sub">
+        {(TYPE_INDICATORS.find((t) => t.mode === (tc.indicator ?? 'both')) ?? TYPE_INDICATORS[0]).hint}
+      </p>
       <div class="color-grid">
         {#each TYPE_LABELS as [type, label] (type)}
           <label class="color-row">
@@ -131,6 +166,29 @@
   .hint strong, .hint em { color: var(--p-aaaaaa); }
   .hint.sub { margin-top: 2px; }
   .field { display: flex; flex-direction: column; gap: 4px; }
+  .indicator-row {
+    display: flex;
+    gap: 4px;
+    margin: 6px 0 2px;
+    flex-wrap: wrap;
+  }
+  .indicator-row button {
+    font-size: 11px;
+    padding: 3px 9px;
+    border: 1px solid var(--p-3a3a3a);
+    border-radius: 4px;
+    background: none;
+    color: var(--p-aaaaaa);
+    font-family: inherit;
+    cursor: pointer;
+  }
+  .indicator-row button:hover { color: var(--text); }
+  .indicator-row button.on {
+    color: var(--text);
+    border-color: var(--accent);
+    background: var(--p-1b2430);
+  }
+
   .color-grid {
     display: flex;
     flex-wrap: wrap;

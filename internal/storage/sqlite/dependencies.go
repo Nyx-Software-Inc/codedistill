@@ -27,6 +27,13 @@ import (
 // Self-edges and duplicates are refused rather than stored: an item that
 // depends on itself makes the whole graph unorderable, and the UNIQUE index
 // would reject the duplicate anyway with a message nobody can act on.
+//
+// CYCLES are refused here rather than in the UI. The picker already disables a
+// choice that would close a loop, but it is only one of the doors: the sequence
+// job writes edges from a model's proposals, and anything reaching the store
+// directly writes them too. A loop makes the graph unorderable — every item in
+// it waits forever on every other — so the guard belongs at the chokepoint all
+// writers share, not at one of them.
 func (s *Store) CreateDependency(ctx context.Context, d *domain.ItemDependency) error {
 	if !domain.ValidItemKind(d.FromKind) || !domain.ValidItemKind(d.ToKind) {
 		return fmt.Errorf("create dependency: unknown item kind")
@@ -36,6 +43,20 @@ func (s *Store) CreateDependency(ctx context.Context, d *domain.ItemDependency) 
 	}
 	if d.FromKind == d.ToKind && d.FromID == d.ToID {
 		return fmt.Errorf("create dependency: an item cannot depend on itself")
+	}
+	// Only hard blockers constrain order, so only they can form a vicious
+	// cycle. An 'informs' loop is harmless: it says two things are easier
+	// together, which is true in both directions and orders nothing.
+	if d.Kind == domain.DependencyBlocks {
+		cyclic, err := s.wouldCycle(ctx, d)
+		if err != nil {
+			return err
+		}
+		if cyclic {
+			return fmt.Errorf(
+				"create dependency: %s already waits on %s — this edge would make a loop",
+				d.ToKind, d.FromKind)
+		}
 	}
 	lines, _ := json.Marshal(d.Lines)
 	if d.Status == "" {
@@ -54,6 +75,59 @@ func (s *Store) CreateDependency(ctx context.Context, d *domain.ItemDependency) 
 		return fmt.Errorf("create dependency: %w", err)
 	}
 	return nil
+}
+
+// wouldCycle reports whether adding d closes a loop: does the proposed blocker
+// already wait, at any depth, on the item being blocked?
+//
+// Iterative with a seen-set rather than recursive. The table may ALREADY hold a
+// cycle — nothing rejected one before this check existed — and a recursive walk
+// over cyclic data never returns. Guarding against bad input is pointless if
+// the guard itself hangs on data that is already bad.
+//
+// Reads the project's edges and then inserts, which is a read-then-write race
+// in principle. Left alone deliberately: the losing writer still cannot create
+// a loop on its own, two concurrent writers would have to each add one half of
+// the same cycle in the same instant, and the cost of a transaction around
+// every edge write is not worth that.
+func (s *Store) wouldCycle(ctx context.Context, d *domain.ItemDependency) (bool, error) {
+	edges, err := s.ListDependencies(ctx, d.ProjectID)
+	if err != nil {
+		return false, fmt.Errorf("create dependency: read graph: %w", err)
+	}
+	key := func(kind, id string) string { return kind + ":" + id }
+	target := key(d.FromKind, d.FromID)
+
+	// Adjacency over edges that actually order work, using the domain's own
+	// InForce() rather than a second copy of the rule here. Advisory AND
+	// accepted both constrain — a derived edge is in force without
+	// ratification — and only a dismissal releases one. A dismissed edge is
+	// kept so a later run does not re-offer it, and must not order anything,
+	// or dismissing would accomplish nothing.
+	next := map[string][]string{}
+	for _, e := range edges {
+		if e.Kind != domain.DependencyBlocks || !e.InForce() {
+			continue
+		}
+		from := key(e.FromKind, e.FromID)
+		next[from] = append(next[from], key(e.ToKind, e.ToID))
+	}
+
+	seen := map[string]bool{}
+	stack := []string{key(d.ToKind, d.ToID)}
+	for len(stack) > 0 {
+		cur := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if cur == target {
+			return true, nil
+		}
+		if seen[cur] {
+			continue
+		}
+		seen[cur] = true
+		stack = append(stack, next[cur]...)
+	}
+	return false, nil
 }
 
 func (s *Store) DeleteDependency(ctx context.Context, id string) error {
