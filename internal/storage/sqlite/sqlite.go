@@ -106,12 +106,21 @@ const busyTimeout = 10 * time.Second
 // The driver splits a non-"file:" DSN at the first '?', opens the left side as
 // the filename, and applies _pragma from the right (modernc.org/sqlite
 // conn.go:43-79), so this works on a bare path and on ":memory:" alike.
+//
+// _time_format and _timezone fix how time.Time values are stored. Without them
+// the driver writes Go's time.String() ("2026-06-20 08:29:09.1 -0400 EDT
+// m=+376.1") in whatever zone the value carried, and since SQLite compares
+// timestamps as text, ORDER BY and range filters went wrong as soon as rows
+// mixed UTC and local time. Now every write is UTC in SQLite's own format
+// ("2026-06-20 12:29:09.1+00:00"), which sorts correctly as text; reads come
+// back in UTC. Migration 0079 rewrites the rows stored the old way.
 func connString(dsn string) string {
 	sep := "?"
 	if strings.Contains(dsn, "?") {
 		sep = "&"
 	}
-	return fmt.Sprintf("%s%s_pragma=busy_timeout(%d)", dsn, sep, busyTimeout.Milliseconds())
+	return fmt.Sprintf("%s%s_pragma=busy_timeout(%d)&_time_format=sqlite&_timezone=UTC",
+		dsn, sep, busyTimeout.Milliseconds())
 }
 
 // OpenDSN dispatches by scheme: a postgres:// or postgresql:// URL opens the

@@ -539,7 +539,31 @@ var ensureOllamaRunning = func(ctx context.Context, sup *ollama.Supervisor) (fun
 	return sup.EnsureRunning(ctx)
 }
 
+// isPostgresDSN decides the dialect from the -db/-database argument, which is
+// either a file path or a DSN.
+func isPostgresDSN(s string) bool {
+	return strings.HasPrefix(s, "postgres://") || strings.HasPrefix(s, "postgresql://")
+}
+
+func dbDialect(s string) string {
+	if isPostgresDSN(s) {
+		return "postgres"
+	}
+	return "sqlite"
+}
+
+// sqliteFileOrEmpty returns the database FILE, or empty for Postgres. Never
+// returns the DSN: it embeds a password and /api/v1/system is read by a browser.
+func sqliteFileOrEmpty(s string) string {
+	if isPostgresDSN(s) {
+		return ""
+	}
+	return s
+}
+
 func cmdServe(dbPath, model, endpoint, modelAPI, addr, appWindow string, ollamaAutostart bool, ollamaBin, licensePath string, noAuth, secureCookies bool) error {
+	// Stamped first thing so "uptime" means uptime rather than time-since-wiring.
+	processStart := time.Now().UTC()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
@@ -778,6 +802,10 @@ func cmdServe(dbPath, model, endpoint, modelAPI, addr, appWindow string, ollamaA
 	// the same job.
 	var blobs blobstore.BlobStore
 	var localBlobs *blobstore.LocalStore
+	// Hoisted out of the branch below so /api/v1/system can report the directory
+	// actually in use. Stays empty for S3, where there is no local directory to
+	// measure and the size question belongs to the bucket.
+	blobRoot := ""
 	if endpoint := os.Getenv("BLOB_S3_ENDPOINT"); endpoint != "" {
 		// Refuse rather than silently fall back to the local store —
 		// splitting blobs across two backends mid-deployment would be
@@ -796,7 +824,7 @@ func cmdServe(dbPath, model, endpoint, modelAPI, addr, appWindow string, ollamaA
 		// (`<db>.blobs/`). A Postgres DSN has no sibling dir, so the blob dir is
 		// taken from $CODEDISTILL_BLOBS (set by the server package); fall back to
 		// a cwd-relative dir rather than a nonsense DSN-derived path.
-		blobRoot := os.Getenv("CODEDISTILL_BLOBS")
+		blobRoot = os.Getenv("CODEDISTILL_BLOBS")
 		if blobRoot == "" {
 			if strings.HasPrefix(dbPath, "postgres://") || strings.HasPrefix(dbPath, "postgresql://") {
 				blobRoot = "codedistill.blobs"
@@ -863,7 +891,17 @@ func cmdServe(dbPath, model, endpoint, modelAPI, addr, appWindow string, ollamaA
 			Endpoint: endpoint, DefaultModel: model, EmbedModel: ollama.DefaultEmbedModel,
 			DataDir: filepath.Dir(dbPath), Binary: setupBinary, Start: setupStart, StartupError: ollamaFailed,
 		}).
-		WithSecureCookies(secureCookies)
+		WithSecureCookies(secureCookies).
+		// What only this function knows: the resolved paths, the listen address
+		// and when we started. DBPath is left EMPTY for Postgres on purpose —
+		// the DSN carries a password and /api/v1/system is read by a browser.
+		WithRuntimeInfo(api.RuntimeInfo{
+			DBPath:    sqliteFileOrEmpty(dbPath),
+			BlobRoot:  blobRoot,
+			Addr:      addr,
+			Dialect:   dbDialect(dbPath),
+			StartedAt: processStart,
+		})
 	if grouper != nil {
 		apiSrv = apiSrv.WithDuplicateGrouper(grouper)
 	}

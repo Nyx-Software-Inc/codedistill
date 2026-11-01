@@ -25,9 +25,10 @@
     onOpenSettings: () => void;
     onOpenAdmin: () => void;
     onOpenStats: () => void;
+    onOpenSystem: () => void;
     onUpdated: () => void;
   };
-  let { me, license, onOpenSettings, onOpenAdmin, onOpenStats, onUpdated }: Props = $props();
+  let { me, license, onOpenSettings, onOpenAdmin, onOpenStats, onOpenSystem, onUpdated }: Props = $props();
 
   let open = $state(false);
   let editing = $state(false);
@@ -204,6 +205,9 @@
       {#if redeemMsg}<div class="license redeem-ok">{redeemMsg}</div>{/if}
       {#if redeemErr}<div class="license redeem-err">{redeemErr}</div>{/if}
 
+      {#if !me?.multi_user || me?.is_admin}
+        <button class="item" role="menuitem" onclick={() => { open = false; onOpenSystem(); }}>🧪 About CodeDistill</button>
+      {/if}
       <button class="item" role="menuitem" onclick={() => { open = false; onOpenStats(); }}>📊 Stats</button>
       <button class="item" role="menuitem" onclick={() => { open = false; onOpenSettings(); }}>⚙ Settings</button>
       {#if me?.multi_user && me?.is_admin}

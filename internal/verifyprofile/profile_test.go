@@ -79,3 +79,81 @@ func TestDetectEmptyRoot(t *testing.T) {
 		t.Errorf("empty root: Language = %q, want \"\"", got.Language)
 	}
 }
+
+// writeTree creates files (with contents) under dir, making parent dirs.
+func writeTree(t *testing.T, dir string, files map[string]string) {
+	t.Helper()
+	for name, body := range files {
+		p := filepath.Join(dir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// A go.work root with no go.mod (locator's layout) is Go, and its commands
+// target the workspace modules — `./...` from that root is rejected by go.
+func TestDetectGoWorkspaceSingleModule(t *testing.T) {
+	dir := t.TempDir()
+	writeTree(t, dir, map[string]string{
+		"go.work":          "go 1.26.0\n\nuse ./backend\n",
+		"backend/go.mod":   "module x\n",
+		"web/package.json": "{}",
+	})
+	got := Detect(dir)
+	want := Profile{
+		Language: "Go (workspace)",
+		Test:     "go test ./backend/...",
+		Lint:     "cd backend && golangci-lint run",
+		Types:    "go vet ./backend/...",
+		Sast:     "cd backend && gosec ./...",
+		Vuln:     "cd backend && govulncheck ./...",
+	}
+	if got != want {
+		t.Errorf("Detect =\n %+v\nwant\n %+v", got, want)
+	}
+}
+
+func TestDetectGoWorkspaceBlockUse(t *testing.T) {
+	dir := t.TempDir()
+	writeTree(t, dir, map[string]string{
+		"go.work":        "go 1.22\n\nuse (\n\t./svc/api // the API\n\t\"./shared\"\n\t./gone\n)\n",
+		"svc/api/go.mod": "module a\n",
+		"shared/go.mod":  "module b\n",
+		// ./gone has no go.mod — dropped rather than emitted into a command.
+	})
+	if mods := GoModules(dir); len(mods) != 2 || mods[0] != "svc/api" || mods[1] != "shared" {
+		t.Fatalf("GoModules = %q, want [svc/api shared]", mods)
+	}
+	got := Detect(dir)
+	if got.Test != "go test ./svc/api/... ./shared/..." {
+		t.Errorf("Test = %q", got.Test)
+	}
+	if got.Sast != "(cd svc/api && gosec ./...) && (cd shared && gosec ./...)" {
+		t.Errorf("Sast = %q", got.Sast)
+	}
+}
+
+// go.mod at the root wins over a go.work beside it: it is a module, so the
+// plain ./... examples are right and GoModules is just the root.
+func TestDetectGoModBeatsGoWork(t *testing.T) {
+	dir := t.TempDir()
+	writeTree(t, dir, map[string]string{"go.mod": "module x\n", "go.work": "use .\n"})
+	if got := Detect(dir); got != profGo {
+		t.Errorf("Detect = %+v, want profGo", got)
+	}
+	if mods := GoModules(dir); len(mods) != 1 || mods[0] != "." {
+		t.Errorf("GoModules = %q, want [.]", mods)
+	}
+}
+
+func TestDetectGoWorkspaceNoUsableModules(t *testing.T) {
+	dir := t.TempDir()
+	writeTree(t, dir, map[string]string{"go.work": "go 1.22\n"})
+	if got := Detect(dir); got.Language != "Go" {
+		t.Errorf("Language = %q, want Go", got.Language)
+	}
+}

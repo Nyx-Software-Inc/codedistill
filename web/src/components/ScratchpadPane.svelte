@@ -615,7 +615,10 @@
   }
 
   // Canvas only renders visible items. The hidden-items badge in the
-  // pad-bar shows a count for discoverability; unhide UX still TBD.
+  // The (N hidden) badge in the pad bar TOGGLES this. Hiding used to be a
+  // one-way door: the badge was a plain <span>, so it announced that items were
+  // hidden and offered no route back — the only way out was the API. Revealed
+  // items render dimmed with the Hide button inverted to Unhide.
   //
   // Two-pass filter:
   //   Pass 1 — per-item gating:
@@ -625,22 +628,48 @@
   //     - When hideDone is on AND a group's children were all filtered
   //       out by pass 1, drop the group too. Otherwise the canvas
   //       leaves an empty frame outline where the group used to live.
+  // Not persisted: revealing hidden items is a thing you do for a minute to
+  // find something, not a mode you live in. A remembered toggle would quietly
+  // undo hiding altogether.
+  let showHidden = $state(false);
+
   let visibleItems = $derived.by(() => {
     const passOne = items.filter((i) => {
-      if (i.hidden) return false;
+      if (i.hidden && !showHidden) return false;
       if (hideDone && i.content_type !== 'group' && doneSourceIds?.has(i.id)) return false;
       return true;
     });
-    if (!hideDone) return passOne;
+    if (!hideDone) return revealBand(passOne);
     // Which groups still have at least one surviving child?
     const groupsWithSurvivors = new Set<string>();
     for (const i of passOne) {
       if (i.group_id) groupsWithSurvivors.add(i.group_id);
     }
-    return passOne.filter((i) =>
+    return revealBand(passOne.filter((i) =>
       i.content_type !== 'group' || groupsWithSurvivors.has(i.id),
-    );
+    ));
   });
+
+  // Revealed hidden cards are drawn in a band under everything else, one per
+  // row, never at their stored coordinates. The canvas compacts when a card is
+  // hidden (NextAvailableGridRow skips hidden items), so the old spot is
+  // usually taken: drawn there, a revealed card sat UNDER a visible one and its
+  // Unhide button could not be clicked. Display only — the stored coordinates
+  // are untouched, and unhiding moves the card to the next free row on the
+  // server, as unarchiving does.
+  function revealBand(list: ScratchpadItem[]): ScratchpadItem[] {
+    if (!showHidden) return list;
+    let row = 0;
+    for (const i of list) {
+      if (!i.hidden) row = Math.max(row, i.grid_row + i.grid_h);
+    }
+    return list.map((i) => {
+      if (!i.hidden) return i;
+      const placed = { ...i, grid_col: 0, grid_row: row };
+      row += i.grid_h;
+      return placed;
+    });
+  }
   // Count of items the hideDone toggle is currently suppressing —
   // surfaced in the pad-bar so it's obvious WHY the canvas got
   // smaller after toggling.
@@ -811,6 +840,15 @@
       onChange();
     } catch (e) {
       void alertDialog(`Hide failed: ${e}`);
+    }
+  }
+
+  async function unhideItem(it: ScratchpadItem) {
+    try {
+      await api.updateItem(it.id, { hidden: false });
+      onChange();
+    } catch (e) {
+      void alertDialog(`Unhide failed: ${e}`);
     }
   }
 
@@ -1122,10 +1160,17 @@
       aria-expanded={filterPanelOpen}
     >⛉{#if filterActive}<span class="funnel-dot" aria-hidden="true"></span>{/if}</button>
     {#if hiddenCount > 0}
-      <span
+      <!-- A button, not a label. The count was already here for
+           discoverability; what was missing was anything to click. -->
+      <button
         class="hidden-badge"
-        title="{hiddenCount} hidden item{hiddenCount === 1 ? '' : 's'}"
-      >({hiddenCount} hidden)</span>
+        class:on={showHidden}
+        aria-pressed={showHidden}
+        title={showHidden
+          ? 'Stop showing hidden items'
+          : `Show ${hiddenCount} hidden item${hiddenCount === 1 ? '' : 's'} so you can unhide them`}
+        onclick={() => (showHidden = !showHidden)}
+      >({hiddenCount} hidden)</button>
     {/if}
   </div>
 
@@ -1264,6 +1309,7 @@
         onLayoutChange={commitLayout}
         onDelete={requestDelete}
         onHide={hideItem}
+        onUnhide={unhideItem}
         onEdit={openItem}
         onReprocess={reprocessItem}
         onMoveItem={(item) => startMove(item)}
@@ -1658,12 +1704,27 @@
     white-space: nowrap;
   }
   .hidden-badge {
+    /* Was a <span> with cursor: help — a hint you could not act on. Now a
+       button, so it needs the reset and a pointer. */
+    border: 1px solid transparent;
+    border-radius: 3px;
+    background: none;
+    font-family: inherit;
     color: var(--p-888888);
     font-size: 10px;
     font-style: italic;
     margin-left: auto;
     padding: 0 4px;
-    cursor: help;
+    cursor: pointer;
+  }
+  .hidden-badge:hover { color: var(--text); border-color: var(--p-3a3a3a); }
+  /* Lit while revealing, so it is obvious the canvas is showing more than
+     usual — otherwise a dimmed card just looks like a rendering bug. */
+  .hidden-badge.on {
+    color: var(--p-ffc56c);
+    border-color: var(--p-5a4620);
+    background: var(--p-241d0f);
+    font-style: normal;
   }
   .move-preview {
     display: flex;

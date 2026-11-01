@@ -22,6 +22,7 @@ package verifyprofile
 
 import (
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -139,6 +140,13 @@ func Detect(repoRoot string) Profile {
 	switch {
 	case hasFile(repoRoot, "go.mod"):
 		return profGo
+	case hasFile(repoRoot, "go.work"):
+		// A workspace root with no go.mod of its own (locator: go.work →
+		// use ./backend). `./...` is wrong here, not just imprecise: go
+		// rejects it outright ("directory prefix . does not contain modules
+		// listed in go.work"), and gosec run from this root exits 0 with an
+		// empty report — a clean bill of health for code it never looked at.
+		return goWorkspaceProfile(GoModules(repoRoot))
 	case hasFile(repoRoot, "pom.xml"):
 		return profMaven
 	case hasFile(repoRoot, "build.gradle", "build.gradle.kts"):
@@ -197,4 +205,107 @@ func gradleIsKotlin(dir string) bool {
 		return false
 	}
 	return strings.Contains(string(b), "kotlin")
+}
+
+// GoModules returns the Go module directories under repoRoot, slash-separated
+// and relative to it: ["."] for a plain go.mod repo, the go.work `use` entries
+// for a workspace, nil when neither applies. Callers that run Go tools need
+// this because in a workspace each tool has to be pointed at (or run inside)
+// the modules themselves — the workspace root is not a module.
+func GoModules(repoRoot string) []string {
+	if repoRoot == "" {
+		return nil
+	}
+	if hasFile(repoRoot, "go.mod") {
+		return []string{"."}
+	}
+	b, err := os.ReadFile(filepath.Join(repoRoot, "go.work"))
+	if err != nil {
+		return nil
+	}
+	var mods []string
+	for _, dir := range parseGoWorkUses(string(b)) {
+		// A `use` naming a directory with no go.mod is a go.work the go
+		// command itself would reject; skip it rather than generate a
+		// command that fails for a reason unrelated to the user's code.
+		if !hasFile(filepath.Join(repoRoot, filepath.FromSlash(dir)), "go.mod") {
+			continue
+		}
+		mods = append(mods, dir)
+	}
+	return mods
+}
+
+// parseGoWorkUses pulls the `use` directories out of a go.work file — both the
+// single-line form (`use ./backend`) and the block form (`use ( … )`). It is a
+// deliberately small parser rather than golang.org/x/mod/modfile: `use` is the
+// only directive we need, and the grammar for it is a line of one path.
+func parseGoWorkUses(src string) []string {
+	var dirs []string
+	inBlock := false
+	add := func(s string) {
+		s = strings.Trim(strings.TrimSpace(s), "\"`")
+		if s == "" {
+			return
+		}
+		dirs = append(dirs, path.Clean(filepath.ToSlash(s)))
+	}
+	for _, line := range strings.Split(src, "\n") {
+		if i := strings.Index(line, "//"); i >= 0 {
+			line = line[:i]
+		}
+		line = strings.TrimSpace(line)
+		switch {
+		case inBlock && line == ")":
+			inBlock = false
+		case inBlock:
+			add(line)
+		case line == "use (" || line == "use(":
+			inBlock = true
+		case strings.HasPrefix(line, "use ") || strings.HasPrefix(line, "use\t"):
+			add(line[len("use"):])
+		}
+	}
+	return dirs
+}
+
+// goWorkspaceProfile builds the Go examples for a workspace from its modules.
+// go test / go vet take package patterns, and workspace mode lets one
+// invocation span modules (./backend/... ./shared/...). The third-party tools
+// are run inside each module instead: gosec is the one verified to report
+// nothing from the workspace root, and per-module is the form golangci-lint
+// and govulncheck are known to handle.
+func goWorkspaceProfile(mods []string) Profile {
+	if len(mods) == 0 {
+		// go.work with no usable `use` — still Go, so show the familiar
+		// examples rather than pretend the language is unknown.
+		return profGo
+	}
+	pats := make([]string, len(mods))
+	for i, m := range mods {
+		pats[i] = "./" + m + "/..."
+	}
+	all := strings.Join(pats, " ")
+	return Profile{
+		Language: "Go (workspace)",
+		Test:     "go test " + all,
+		Lint:     inEachModule(mods, "golangci-lint run"),
+		Types:    "go vet " + all,
+		Sast:     inEachModule(mods, "gosec ./..."),
+		Vuln:     inEachModule(mods, "govulncheck ./..."),
+	}
+}
+
+// inEachModule runs cmd inside every module, failing if any run fails. The
+// commands go through `sh -c` (internal/verify/runner.go), so a subshell per
+// module keeps each cd from leaking into the next.
+func inEachModule(mods []string, cmd string) string {
+	if len(mods) == 1 {
+		return "cd " + mods[0] + " && " + cmd
+	}
+	parts := make([]string, len(mods))
+	for i, m := range mods {
+		parts[i] = "(cd " + m + " && " + cmd + ")"
+	}
+	return strings.Join(parts, " && ")
 }

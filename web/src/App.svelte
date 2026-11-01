@@ -43,6 +43,7 @@
   import ProfileMenu from './components/ProfileMenu.svelte';
   import AdminConsole from './components/AdminConsole.svelte';
   import StatsModal from './components/StatsModal.svelte';
+  import SystemInfoModal from './components/SystemInfoModal.svelte';
   import { activity } from './lib/activity.svelte';
   import { uiPrefs, initUiPrefs } from './lib/uiPrefs.svelte';
   import PowerBadge from './components/PowerBadge.svelte';
@@ -325,6 +326,7 @@
   let settingsOpen = $state(false);
   let adminOpen = $state(false);
   let statsOpen = $state(false);
+  let systemOpen = $state(false);
   // First-run setup: shown until Ollama answers and both models exist, or the
   // user skips for this session. null = not needed / not yet checked.
   let setupStatus = $state<api.SetupStatus | null>(null);
@@ -1442,6 +1444,9 @@
       <span aria-hidden="true">☰</span>
     </button>
     <span class="brand">
+      <!-- Double-click the mark opens About. The single-click handler is the
+           matrix-theme dismissal and no-ops otherwise, so the two coexist —
+           clicks still fire first, they just do nothing. -->
       <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
       <svg
         class="logo"
@@ -1449,6 +1454,7 @@
         viewBox="0 0 64 64"
         aria-hidden="true"
         onclick={onLogoClick}
+        ondblclick={() => (systemOpen = true)}
       >
         <!-- Distillation flask refining to a crystal — the CodeDistill mark.
              A single accent token so the mark adapts to light/dark themes;
@@ -1630,12 +1636,14 @@
         onOpenSettings={() => (settingsOpen = true)}
         onOpenAdmin={() => (adminOpen = true)}
         onOpenStats={() => (statsOpen = true)}
+        onOpenSystem={() => (systemOpen = true)}
         onUpdated={() => api.getMe().then((m) => (currentUser = m)).catch(() => {})}
       />
     </div>
   </header>
 
   <StatsModal open={statsOpen} onClose={() => (statsOpen = false)} />
+  <SystemInfoModal open={systemOpen} onClose={() => (systemOpen = false)} />
   {#if setupStatus}
     <SetupScreen status={setupStatus} onDone={() => { setupStatus = null; void refresh(); }} />
   {/if}

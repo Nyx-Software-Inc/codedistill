@@ -53,3 +53,40 @@ func TestArchive_HidesFromCanvasButRetains(t *testing.T) {
 		t.Errorf("un-archive should restore the item, got %+v", live)
 	}
 }
+
+// Hiding compacts the canvas, so a card captured after the hide takes the
+// hidden card's spot. Unhiding must not put the card back on top of it — the
+// same rule unarchive follows.
+func TestUnhide_MovesToNextFreeRow(t *testing.T) {
+	srv, _ := setup(t)
+
+	var p domain.Project
+	doJSON(t, srv, "POST", "/api/v1/projects", map[string]string{"name": "p"}, 201, &p)
+	var sp domain.Scratchpad
+	doJSON(t, srv, "POST", "/api/v1/projects/"+p.ID+"/scratchpads", map[string]string{"name": "x"}, 201, &sp)
+	var a, b domain.ScratchpadItem
+	doJSON(t, srv, "POST", "/api/v1/scratchpads/"+sp.ID+"/items", map[string]string{"content": "first"}, 201, &a)
+	doJSON(t, srv, "PATCH", "/api/v1/items/"+a.ID, map[string]any{"hidden": true}, 200, nil)
+	doJSON(t, srv, "POST", "/api/v1/scratchpads/"+sp.ID+"/items", map[string]string{"content": "second"}, 201, &b)
+	if b.GridRow != a.GridRow || b.GridCol != a.GridCol {
+		t.Fatalf("precondition: the new card should take the hidden card's spot (a %d,%d; b %d,%d)",
+			a.GridCol, a.GridRow, b.GridCol, b.GridRow)
+	}
+
+	var got domain.ScratchpadItem
+	doJSON(t, srv, "PATCH", "/api/v1/items/"+a.ID, map[string]any{"hidden": false}, 200, &got)
+	if got.Hidden {
+		t.Fatal("item still hidden")
+	}
+	if got.GridCol != 0 || got.GridRow != b.GridRow+b.GridH {
+		t.Errorf("unhidden card at %d,%d; want 0,%d (the row below the card now in its old spot)",
+			got.GridCol, got.GridRow, b.GridRow+b.GridH)
+	}
+
+	// An explicit position in the same request is honoured.
+	doJSON(t, srv, "PATCH", "/api/v1/items/"+a.ID, map[string]any{"hidden": true}, 200, nil)
+	doJSON(t, srv, "PATCH", "/api/v1/items/"+a.ID, map[string]any{"hidden": false, "grid_col": 3, "grid_row": 7}, 200, &got)
+	if got.GridCol != 3 || got.GridRow != 7 {
+		t.Errorf("explicit position ignored: got %d,%d, want 3,7", got.GridCol, got.GridRow)
+	}
+}

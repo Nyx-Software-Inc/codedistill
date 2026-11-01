@@ -32,6 +32,8 @@
     onLayoutChange: (updates: Record<string, Layout>) => void;
     onDelete: (item: ScratchpadItem) => void;
     onHide: (item: ScratchpadItem) => void;
+    /** Optional: only reachable while the pad bar is revealing hidden items. */
+    onUnhide?: (item: ScratchpadItem) => void;
     onEdit: (item: ScratchpadItem) => void;
     onMoveItem: (item: ScratchpadItem) => void;
     // Re-enqueue a stuck capture (unprocessed/failed) for classification.
@@ -111,7 +113,7 @@
     tagsBySource?: Map<string, string[]>;
   };
   let {
-    items, onLayoutChange, onDelete, onHide, onEdit, onMoveItem, onReprocess, onDecompose,
+    items, onLayoutChange, onDelete, onHide, onUnhide, onEdit, onMoveItem, onReprocess, onDecompose,
     onOpenSimilar, onDismissSimilar, onGroupSimilar,
     flashItemId = null, itemAnchors = {}, onAnchorBadge, onAnchorBadgeHover,
     doneSourceIds,
@@ -1046,6 +1048,7 @@
       class:flash={flashing === item.id}
       class:done={doneSourceIds?.has(item.id) ?? false}
       class:selected={isSelected}
+      class:is-hidden={item.hidden}
       style="
         grid-column: {item.grid_col + 1} / span {item.grid_w};
         grid-row: {item.grid_row + 1} / span {item.grid_h};
@@ -1164,13 +1167,27 @@
           title="Move to scratchpad…"
           aria-label="Move to scratchpad"
         ><Icon name="move" size={13} /></button>
-        <button
-          class="icon-btn"
-          data-grid-nodrag
-          onclick={(e) => { e.stopPropagation(); onHide(item); }}
-          title="Hide from canvas"
-          aria-label="Hide"
-        >−</button>
+        <!-- Same control, inverted. A hidden card is only on screen because the
+             pad bar's "(N hidden)" toggle is on, and the obvious place to put it
+             back is where it went away from — a separate Unhide button
+             elsewhere would be a second thing to find. -->
+        {#if item.hidden}
+          <button
+            class="icon-btn"
+            data-grid-nodrag
+            onclick={(e) => { e.stopPropagation(); onUnhide?.(item); }}
+            title="Unhide — put this back on the canvas"
+            aria-label="Unhide"
+          >+</button>
+        {:else}
+          <button
+            class="icon-btn"
+            data-grid-nodrag
+            onclick={(e) => { e.stopPropagation(); onHide(item); }}
+            title="Hide from canvas"
+            aria-label="Hide"
+          >−</button>
+        {/if}
         <button
           class="del"
           data-grid-nodrag
@@ -1621,6 +1638,14 @@
   .item.striped {
     border-left: 4px solid var(--type-stripe, transparent);
   }
+
+  /* Only on screen because the pad bar is revealing hidden items. Dashed and
+     faded so it is obvious which cards are not really there. */
+  .item.is-hidden {
+    opacity: 0.55;
+    border-style: dashed;
+  }
+  .item.is-hidden:hover { opacity: 0.9; }
 
   /* Blocked reads off the stripe before you read any text: same hue, broken
      into dashes. Costs no width, which is why it beat a header chip. */

@@ -693,6 +693,31 @@ export const createDependency = (body: {
 export const deleteDependency = (id: string) =>
   req<void>('DELETE', `/dependencies/${id}`);
 
+// What the installation IS (admin-gated server-side; see internal/api/system.go).
+// Distinct from getGlobalStats, which reports what is IN it.
+export interface SystemInfo {
+  build: {
+    version: string; git_sha: string; build_date: string;
+    edition: string; features: string[];
+  };
+  runtime: {
+    os: string; arch: string; go_version: string; cpus: number; pid: number;
+    addr: string; started_at: string; uptime_seconds: number;
+  };
+  storage: {
+    dialect: string;
+    database_path?: string; database_bytes: number;
+    blob_path?: string; blob_bytes: number; blob_files: number;
+    data_dir?: string;
+  };
+  models: {
+    endpoint?: string; default_model?: string; embed_model?: string;
+    installed?: string[]; reachable: boolean; error?: string;
+  };
+}
+
+export const getSystemInfo = () => req<SystemInfo>('GET', '/system');
+
 export const getReadiness = (projectId: string) =>
   req<ReadinessResponse>('GET', `/readiness?project_id=${encodeURIComponent(projectId)}`);
 

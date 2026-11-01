@@ -26,12 +26,17 @@ import (
 // TestScanIntegration runs the real analyzers against this repo. Guarded by an
 // env var because it needs gosec + staticcheck on PATH (and is slow); enable
 // with CODEANALYSIS_INTEGRATION=1. Validates that real analyzer JSON parses into
-// findings end-to-end.
+// findings end-to-end. CODEANALYSIS_REPO points it at another checkout (e.g. a
+// go.work workspace) instead of this one.
 func TestScanIntegration(t *testing.T) {
 	if os.Getenv("CODEANALYSIS_INTEGRATION") != "1" {
 		t.Skip("set CODEANALYSIS_INTEGRATION=1 (needs gosec + staticcheck on PATH)")
 	}
-	res := Scan(context.Background(), "../..") // repo root from this package
+	root := "../.." // repo root from this package
+	if r := os.Getenv("CODEANALYSIS_REPO"); r != "" {
+		root = r
+	}
+	res := Scan(context.Background(), root)
 	t.Logf("findings=%d files=%d skipped=%v notes=%v", len(res.Findings), res.FilesScanned, res.Skipped, res.Notes)
 	if res.FilesScanned == 0 {
 		t.Errorf("expected to count Go files")
@@ -82,6 +87,68 @@ func TestScanRoutesGoToNativeAnalyzers(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(res.Skipped, " "), "semgrep") {
 		t.Fatalf("Go repo must not mention semgrep, got Skipped=%v", res.Skipped)
+	}
+}
+
+// TestScanRoutesGoWorkspaceToNativeAnalyzers: a go.work root with no go.mod is
+// still Go — it must reach gosec/staticcheck, not fall through to semgrep.
+func TestScanRoutesGoWorkspaceToNativeAnalyzers(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "backend"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"go.work":        "go 1.22\n\nuse ./backend\n",
+		"backend/go.mod": "module x\n\ngo 1.22\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	res := Scan(context.Background(), dir)
+	all := strings.Join(append(append([]string{}, res.Skipped...), res.Notes...), " ")
+	if strings.Contains(all, "semgrep") {
+		t.Fatalf("go.work repo must not route to semgrep, got Skipped=%v Notes=%v", res.Skipped, res.Notes)
+	}
+	for _, f := range res.Findings {
+		if f.Analyzer == "semgrep" {
+			t.Fatal("go.work repo must not run semgrep")
+		}
+	}
+}
+
+// Findings from an analyzer run inside a workspace module come back relative to
+// that module; rebaseFindings makes them repo-relative and re-derives only the
+// fingerprints that were derived from the path.
+func TestRebaseFindings(t *testing.T) {
+	own := Finding{Analyzer: "staticcheck", RuleID: "SA1", FilePath: "internal/x.go", LineStart: 3}
+	own.Fingerprint = fingerprint(own)
+	tool := Finding{Analyzer: "gosec", RuleID: "G1", FilePath: "internal/y.go", LineStart: 5, Fingerprint: "fromtool"}
+	abs := Finding{Analyzer: "gosec", RuleID: "G2", FilePath: "/elsewhere/z.go", LineStart: 1, Fingerprint: "a"}
+	found := []Finding{own, tool, abs}
+
+	rebaseFindings(found, "backend")
+
+	if found[0].FilePath != "backend/internal/x.go" {
+		t.Errorf("path = %q", found[0].FilePath)
+	}
+	want := own
+	want.FilePath = "backend/internal/x.go"
+	if found[0].Fingerprint != fingerprint(want) || found[0].Fingerprint == own.Fingerprint {
+		t.Errorf("derived fingerprint not re-derived from the new path")
+	}
+	if found[1].FilePath != "backend/internal/y.go" || found[1].Fingerprint != "fromtool" {
+		t.Errorf("tool finding = %+v; path should move, tool fingerprint should not", found[1])
+	}
+	if found[2].FilePath != "/elsewhere/z.go" {
+		t.Errorf("absolute path rewritten: %q", found[2].FilePath)
+	}
+
+	// The root module is a no-op: plain go.mod repos keep their fingerprints.
+	root := []Finding{own}
+	rebaseFindings(root, ".")
+	if root[0] != own {
+		t.Errorf("mod \".\" changed a finding: %+v", root[0])
 	}
 }
 

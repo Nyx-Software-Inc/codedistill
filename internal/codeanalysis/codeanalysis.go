@@ -43,6 +43,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -105,9 +106,18 @@ func Scan(ctx context.Context, repoRoot string) Result {
 	res := Result{}
 	lang := verifyprofile.Detect(repoRoot).Language
 	switch {
-	case lang == "Go":
-		runGosec(ctx, repoRoot, &res)
-		runStaticcheck(ctx, repoRoot, &res)
+	case strings.HasPrefix(lang, "Go"): // "Go", or "Go (workspace)" for a go.work root
+		// Run inside each module. For a plain go.mod repo that is just the
+		// root, unchanged. For a go.work root it is required: gosec run from
+		// the workspace root exits 0 with an empty report, so a scan there
+		// would record "clean" for code it never examined.
+		for _, mod := range verifyprofile.GoModules(repoRoot) {
+			modDir := filepath.Join(repoRoot, filepath.FromSlash(mod))
+			before := len(res.Findings)
+			runGosec(ctx, modDir, &res)
+			runStaticcheck(ctx, modDir, &res)
+			rebaseFindings(res.Findings[before:], mod)
+		}
 		res.FilesScanned = countSourceFiles(repoRoot, ".go")
 
 	case strings.HasPrefix(lang, "Kotlin"):
@@ -392,6 +402,29 @@ func relPath(repoRoot, p string) string {
 		return rel
 	}
 	return p
+}
+
+// rebaseFindings turns module-relative paths (an analyzer run inside a go.work
+// module reports internal/x.go) into repo-relative ones (backend/internal/x.go),
+// so findings anchor to the right file. A fingerprint we derived from the old
+// path is re-derived; one taken from the tool's own partialFingerprints is left
+// alone. mod "." is a no-op, which keeps plain go.mod repos' fingerprints — and
+// so their findings' open/resolved history — exactly as they were.
+func rebaseFindings(found []Finding, mod string) {
+	if mod == "." || mod == "" {
+		return
+	}
+	for i := range found {
+		f := &found[i]
+		if f.FilePath == "" || filepath.IsAbs(f.FilePath) {
+			continue
+		}
+		derived := f.Fingerprint == fingerprint(*f)
+		f.FilePath = path.Join(mod, filepath.ToSlash(f.FilePath))
+		if derived {
+			f.Fingerprint = fingerprint(*f)
+		}
+	}
 }
 
 // countSourceFiles is a cheap, consistent "files scanned" number for the given

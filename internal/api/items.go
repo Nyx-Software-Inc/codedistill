@@ -538,6 +538,16 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if req.Hidden != nil {
+		// Unhiding: hidden items don't reserve canvas space, so the stored
+		// coordinates may now be under a visible card. Move to the next free
+		// row, as unarchiveItem does — computed while the item is still
+		// hidden, so its own stale row can't inflate the answer. An explicit
+		// grid_col/grid_row in the same request wins (applied below).
+		if item.Hidden && !*req.Hidden {
+			if nextRow, err := s.store.NextAvailableGridRow(r.Context(), item.ScratchpadID); err == nil {
+				item.GridCol, item.GridRow = 0, nextRow
+			}
+		}
 		item.Hidden = *req.Hidden
 	}
 	if req.Annotations != nil && item.ContentType == "group" {

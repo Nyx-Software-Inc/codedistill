@@ -23,6 +23,7 @@
     onChange: (v: string | undefined) => void;
     label?: string;
   };
+  import { dueDayKey, endOfDayISO } from '../lib/dueDate';
   let { value, onChange, label = 'Due date' }: Props = $props();
 </script>
 
@@ -31,8 +32,11 @@
   <div class="due-row">
     <input
       type="date"
-      value={value ? value.slice(0, 10) : ''}
-      onchange={(e) => onChange((e.currentTarget as HTMLInputElement).value || undefined)}
+      value={dueDayKey(value) ?? ''}
+      onchange={(e) => {
+        const day = (e.currentTarget as HTMLInputElement).value;
+        onChange(day ? endOfDayISO(day) : undefined);
+      }}
     />
     {#if value}
       <button type="button" class="due-clear" title="Clear due date" onclick={() => onChange(undefined)}>×</button>

@@ -50,7 +50,10 @@ type Server struct {
 	store storage.Storage
 	agent *agent.Agent
 	build BuildInfo
-	log   *slog.Logger
+	// rt is what only the process that parsed the flags knows: listen address,
+	// database path, dialect, start time. Reported by GET /api/v1/system.
+	rt  RuntimeInfo
+	log *slog.Logger
 	// auth is the OIDC login provider (multi-user). nil = single-user mode:
 	// the login routes report "not configured" and currentUser stays 'local'.
 	auth *oidcAuth
@@ -338,6 +341,8 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/v1/health", s.health)
 	mux.HandleFunc("GET /api/v1/version", s.version)
+	// What the installation IS (admin-gated: paths, listen address, endpoints).
+	mux.HandleFunc("GET /api/v1/system", s.systemInfo)
 	mux.HandleFunc("GET /api/v1/license", s.licenseStatus)
 	// Activation-service slice 2: redeem a purchase claim code / refresh after
 	// renewal. POSTs are write-auth gated by the global middleware.
