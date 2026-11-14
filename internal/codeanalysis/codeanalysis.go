@@ -321,13 +321,19 @@ func runSARIFTool(ctx context.Context, repoRoot, tool, bin string, args []string
 	cmd.Dir = repoRoot
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
-	_ = cmd.Run() // a non-zero exit is normal when findings exist
+	runErr := cmd.Run() // a non-zero exit is normal when findings exist
 
 	if ctx2.Err() == context.DeadlineExceeded {
 		res.Notes = append(res.Notes, fmt.Sprintf(
 			"%s: timed out after %s — the scan was killed, no findings recorded "+
 				"(a registry rule fetch may need network; point at a local rules dir to scan offline)",
 			tool, scanTimeout))
+		return
+	}
+	// gosec -quiet prints nothing at all when the code is clean, and exits 0;
+	// it exits 1 with SARIF when it finds something. Recording that silence as
+	// "no parseable output" made a clean scan and a broken one look alike.
+	if tool == "gosec" && runErr == nil && len(bytes.TrimSpace(out.Bytes())) == 0 && len(bytes.TrimSpace(errb.Bytes())) == 0 {
 		return
 	}
 	findings, err := ParseSARIF(out.Bytes(), repoRoot)
@@ -463,6 +469,29 @@ func resolveBinary(name string) (string, bool) {
 	if p, err := exec.LookPath(name); err == nil {
 		return p, true
 	}
+	for _, d := range toolDirs() {
+		cand := filepath.Join(d, name)
+		if fi, err := os.Stat(cand); err == nil && !fi.IsDir() {
+			return cand, true
+		}
+	}
+	return "", false
+}
+
+// ToolDirs is where analyzers are installed outside a minimal PATH, keeping
+// only the directories that exist. An agent's PATH gets these too, so the
+// tools CodeDistill can find, the agent can find.
+func ToolDirs() []string {
+	var out []string
+	for _, d := range toolDirs() {
+		if fi, err := os.Stat(d); err == nil && fi.IsDir() {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+func toolDirs() []string {
 	var dirs []string
 	if gobin := os.Getenv("GOBIN"); gobin != "" {
 		dirs = append(dirs, gobin)
@@ -477,14 +506,7 @@ func resolveBinary(name string) (string, bool) {
 		dirs = append(dirs, filepath.Join(home, "go", "bin"), filepath.Join(home, ".local", "bin"))
 	}
 	// Common system/brew locations for pip/pipx/Homebrew-installed tools.
-	dirs = append(dirs, "/usr/local/bin", "/opt/homebrew/bin")
-	for _, d := range dirs {
-		cand := filepath.Join(d, name)
-		if fi, err := os.Stat(cand); err == nil && !fi.IsDir() {
-			return cand, true
-		}
-	}
-	return "", false
+	return append(dirs, "/usr/local/bin", "/opt/homebrew/bin")
 }
 
 func firstLine(s string) string {

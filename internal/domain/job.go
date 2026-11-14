@@ -43,6 +43,9 @@ const (
 	JobDecompose = "decompose"  // a document into proposed work items
 	JobArchDraft = "arch_draft" // characterise architecture components
 	JobSequence  = "sequence"   // work out what has to happen before what
+	// An outside agent fixes scanner findings on one branch, highest priority
+	// first; CodeDistill verifies each fix (docs/design/fix-scanner-findings.md).
+	JobFixFindings = "fix_findings"
 )
 
 // Job is one run of long work. It records the run, not the work: how a job
@@ -75,6 +78,13 @@ type Job struct {
 	StartedAt  time.Time  `json:"started_at"`
 	UpdatedAt  time.Time  `json:"updated_at"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
+
+	// Branch is the git branch the job owns, for workflows that change code.
+	// The Conductor cuts it from BaseSHA and hands its worktree to the agents;
+	// every commit left on it is a verified result. Empty for jobs that write
+	// nothing to the repository.
+	Branch  string `json:"branch,omitempty"`
+	BaseSHA string `json:"base_sha,omitempty"`
 }
 
 // Active reports whether the job is still doing work.

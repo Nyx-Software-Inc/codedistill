@@ -259,6 +259,12 @@ examples:
 		if err := cmdIndexCode(dbArg, *endpoint); err != nil {
 			die("index-code failed: %v", err)
 		}
+	case "worker":
+		// Run by the Conductor, not by people: the adapter between the worker
+		// contract and an outside coding agent. Not in the usage text.
+		if err := cmdWorker(flag.Args()[1:]); err != nil {
+			die("worker failed: %v", err)
+		}
 	case "reset":
 		// dbArg, not *dbPath. These two destructive commands were the only ones
 		// reading the raw -db value instead of the effective database, so on a
@@ -968,6 +974,13 @@ func cmdServe(dbPath, model, endpoint, modelAPI, addr, appWindow string, ollamaA
 	// revoked token while refusing the new one.
 	root.Handle("/mcp", mcpserver.NewStreamableHTTPServer(mcpSrv,
 		mcpserver.WithHTTPContextFunc(mcppkg.AuthContextFunc(apiSrv.TokenValue))))
+	// The agents the Conductor starts reach CodeDistill here, each with a
+	// token for its own run (api.AgentMCPHandler): they run where they
+	// cannot write the database.
+	if h := apiSrv.AgentMCPHandler(); h != nil {
+		root.Handle(api.AgentMCPPath, h)
+		root.Handle(api.AgentMCPPath+"/", h)
+	}
 	// .webmanifest isn't in Go's built-in MIME table; without this the
 	// PWA manifest serves as text/plain and Chrome refuses to install.
 	_ = mime.AddExtensionType(".webmanifest", "application/manifest+json")
@@ -987,6 +1000,8 @@ func cmdServe(dbPath, model, endpoint, modelAPI, addr, appWindow string, ollamaA
 		blobGC := blobstore.NewGCWatcher(store, localBlobs, time.Hour, 24*time.Hour, logger)
 		go blobGC.Run(ctx)
 	}
+	// The security knowledge base refreshes on each source's schedule.
+	apiSrv.StartSecurityKnowledge(ctx)
 
 	srv := &http.Server{
 		Addr:              addr,
@@ -1102,6 +1117,11 @@ func cmdMCP(dbPath, licensePath string) error {
 	// any blob URL would be unreachable; read_item simply omits it.
 	// No verifier in stdio mode — no long-lived process to host async runs.
 	srv := mcppkg.NewServer(store, version, nil, nil, nil, 0, includeWrites, nil)
+	if scope := jobScopeFromEnv(); scope.ID != "" {
+		// Started by the Conductor for one agent run: that role's tools only,
+		// writes only for its own item.
+		srv = mcppkg.NewJobServer(store, version, scope, includeWrites)
+	}
 	// ServeStdio blocks until stdin closes (client disconnect) or the
 	// process is signaled. Returns nil on clean shutdown.
 	return mcpserver.ServeStdio(srv)

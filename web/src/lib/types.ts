@@ -507,4 +507,8 @@ export type DerivedStatus = {
   number?: number;
   /** Comparable priority position; see rankFor. */
   rank?: number;
+  /** KB only: the entry's CURRENT content. A KB card's body is the knowledge,
+   *  so it shows this rather than the original capture, which is immutable
+   *  once classified and would otherwise go stale on the canvas. */
+  body?: string;
 };

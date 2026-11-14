@@ -93,6 +93,8 @@ func (s *Server) submitJob(w http.ResponseWriter, r *http.Request) {
 		s.submitDecompose(w, r, req.ProjectID, params)
 	case domain.JobSequence:
 		s.submitSequence(w, r, req.ProjectID, params)
+	case domain.JobFixFindings:
+		s.submitFixFindings(w, r, req.ProjectID, params)
 	case domain.JobArchDraft:
 		// Architecture drafting owns its own launch path: it derives its work
 		// from the repository tree, which has to be walked before there is

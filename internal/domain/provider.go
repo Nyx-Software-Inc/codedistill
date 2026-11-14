@@ -54,11 +54,15 @@ const (
 	// is the fox guarding the henhouse.
 	WorkerSolutioner = "solutioner"
 	WorkerChallenger = "challenger"
+
+	// WorkerTestBuilder writes the tests for an agreed approach, alongside the
+	// solutioner and without seeing its code.
+	WorkerTestBuilder = "test_builder"
 )
 
 // WorkerTypes in a stable order, for UI and validation.
 var WorkerTypes = []string{
-	WorkerClassifier, WorkerDecomposer, WorkerReviewer, WorkerSolutioner, WorkerChallenger,
+	WorkerClassifier, WorkerDecomposer, WorkerReviewer, WorkerSolutioner, WorkerChallenger, WorkerTestBuilder,
 }
 
 // ValidWorkerType reports whether t is a worker type CodeDistill itself knows
@@ -96,6 +100,10 @@ type ModelProvider struct {
 	// and answers confidently from the remainder.
 	ContextTokens int `json:"context_tokens"`
 
+	// Connector is how an agent role on this model is run: ConnectorAuto,
+	// ConnectorBuiltin or ConnectorClaudeCode (docs/design/agent-loop.md).
+	Connector string `json:"connector"`
+
 	// IsLocal records whether data leaves the machine. Stored rather than
 	// inferred from the endpoint, because "localhost" is not a reliable
 	// signal — an SSH tunnel looks local and is not — and a user deserves a
@@ -107,6 +115,30 @@ type ModelProvider struct {
 	LastError string     `json:"last_error,omitempty"`
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
+}
+
+// Connectors: what runs an agent role's loop on a model.
+const (
+	// ConnectorAuto: an Anthropic model runs through Claude Code when it is
+	// installed and signed in, otherwise on the built-in loop; any other
+	// model on the built-in loop.
+	ConnectorAuto = "auto"
+	// ConnectorBuiltin: CodeDistill's own agent loop, billed to the API key.
+	ConnectorBuiltin = "builtin"
+	// ConnectorClaudeCode: Claude Code, on the customer's Claude
+	// subscription. Anthropic models only.
+	ConnectorClaudeCode = "claude-code"
+)
+
+// ValidConnector reports whether c may be set on a model of protocol p.
+func ValidConnector(c, protocol string) bool {
+	switch c {
+	case ConnectorAuto, ConnectorBuiltin:
+		return true
+	case ConnectorClaudeCode:
+		return protocol == "anthropic"
+	}
+	return false
 }
 
 // Protocols with an adapter. The database column is deliberately open — a

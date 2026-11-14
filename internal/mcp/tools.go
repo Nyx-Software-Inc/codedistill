@@ -102,6 +102,24 @@ type Tools struct {
 	// successful mutating write tool so SSE subscribers (the SPA) refresh
 	// immediately. When nil (stdio mode — no HTTP/SSE), writes are silent.
 	Notify func()
+
+	// Job is set when this server was started FOR one agent run of one job
+	// (`codedistill mcp -job …`), which is how the Conductor hands an outside
+	// agent CodeDistill's tools. Zero for an ordinary session.
+	Job JobScope
+}
+
+// JobScope is what an agent started by the Conductor is allowed to act for:
+// one job, in one role, on one item. The stdio transport is trusted-local, so
+// without this an agent fixing one finding could edit any item in any
+// project; with it, the server answers for its own work only.
+type JobScope struct {
+	ID        string // the job
+	Role      string // test_builder | solutioner | challenger
+	OwnerType string // the item being worked
+	OwnerID   string
+	Lens      string // a challenger's lens: security | code
+	Dir       string // the agent's copy of the code, for run_scanner
 }
 
 // New returns a Tools value bound to store. The returned value is safe to
@@ -210,6 +228,11 @@ func (t *Tools) notifyMiddleware(next server.ToolHandlerFunc) server.ToolHandler
 // the sense that mcp-go errors loudly on duplicate registration; the
 // caller should call Register exactly once per server.
 func (t *Tools) Register(srv *server.MCPServer, includeWrites bool) {
+	// An agent the Conductor started gets its role's tools and nothing else.
+	if t.Job.ID != "" {
+		t.registerJobTools(srv, includeWrites)
+		return
+	}
 	// Read tools are ALWAYS available — "MCP read free" is the funnel hook,
 	// so a free/unlicensed install can still wire an agent to pull intent.
 	t.registerListProjects(srv)
@@ -222,6 +245,7 @@ func (t *Tools) Register(srv *server.MCPServer, includeWrites bool) {
 	t.registerReadItem(srv)
 	t.registerGetProjectBrain(srv)
 	t.registerGetCommitChanges(srv)
+	t.registerListReviewComments(srv)
 	// Write tools are PAID: registered only when licensed (commercial
 	// build), physically stripped from the open-source build (the oss
 	// registerWriteTools is a no-op — see tools_write_oss.go), and gated by
@@ -253,6 +277,16 @@ func NewServer(store storage.Storage, version string, enqueuer Enqueuer, verifie
 		opts = append(opts, server.WithToolHandlerMiddleware(tools.notifyMiddleware))
 	}
 	srv := server.NewMCPServer(ServerName, version, opts...)
+	tools.Register(srv, includeWrites)
+	return srv
+}
+
+// NewJobServer builds a server for one agent run of one job: the role's tools
+// only, writes only for the scoped item (see registerJobTools).
+func NewJobServer(store storage.Storage, version string, scope JobScope, includeWrites bool) *server.MCPServer {
+	tools := New(store)
+	tools.Job = scope
+	srv := server.NewMCPServer(ServerName, version, server.WithToolCapabilities(true))
 	tools.Register(srv, includeWrites)
 	return srv
 }

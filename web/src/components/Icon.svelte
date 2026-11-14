@@ -11,13 +11,10 @@
   SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Nyx-Commercial
 ============================================================================= -->
 
-<script lang="ts">
-  // Inline SVG icon set. Used wherever a Unicode glyph would render
-  // inconsistently across platforms (most notably ✏ U+270F, which macOS
-  // forces into emoji presentation and renders blank in some font stacks).
-  // Stroke uses currentColor so the icon inherits the surrounding text color.
-
-  type IconName =
+<script lang="ts" module>
+  // The name set is exported so registries (lib/commands.svelte.ts) can name
+  // an icon without importing the component.
+  export type IconName =
     | 'pencil' | 'edit' | 'copy' | 'download'
     | 'workspace' | 'project' | 'scratchpad'
     | 'anchor' | 'sparkle' | 'link'
@@ -26,7 +23,16 @@
     | 'menu' | 'dashboard' | 'check' | 'jobs' | 'architecture' | 'datamodel' | 'analysis'
     | 'ask' | 'help' | 'search' | 'lists'
     | 'restack' | 'canvas' | 'listview' | 'calendar' | 'kanban'
-    | 'duplicates' | 'archived' | 'export' | 'upload';
+    | 'duplicates' | 'archived' | 'export' | 'upload'
+    // Code review.
+    | 'branch' | 'diff';
+</script>
+
+<script lang="ts">
+  // Inline SVG icon set. Used wherever a Unicode glyph would render
+  // inconsistently across platforms (most notably ✏ U+270F, which macOS
+  // forces into emoji presentation and renders blank in some font stacks).
+  // Stroke uses currentColor so the icon inherits the surrounding text color.
 
   type Props = {
     name: IconName;
@@ -230,6 +236,10 @@
   <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.5" y2="16.5" /></svg>
 {:else if name === 'lists'}
   <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><line x1="8" y1="6" x2="20" y2="6" /><line x1="8" y1="12" x2="20" y2="12" /><line x1="8" y1="18" x2="20" y2="18" /><circle cx="4" cy="6" r="1" /><circle cx="4" cy="12" r="1" /><circle cx="4" cy="18" r="1" /></svg>
+{:else if name === 'branch'}
+  <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="4" r="2.2" /><circle cx="6" cy="20" r="2.2" /><circle cx="18" cy="8" r="2.2" /><path d="M6 6.2v11.6" /><path d="M18 10.2c0 4-12 3-12 7.6" /></svg>
+{:else if name === 'diff'}
+  <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 3v8" /><path d="M8 7h8" /><path d="M8 17h8" /><path d="M4 12h16" opacity="0.4" /></svg>
 {:else if name === 'restack'}
   <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 3 8l9 5 9-5-9-5z" /><path d="M3 13l9 5 9-5" /></svg>
 {:else if name === 'canvas'}

@@ -329,3 +329,49 @@ func TestRelPath(t *testing.T) {
 		t.Errorf("relPath outside = %q, want passthrough", got)
 	}
 }
+
+func TestToolDirsKeepsOnlyDirectoriesThatExist(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("GOBIN", "")
+	t.Setenv("GOPATH", "")
+	if err := os.MkdirAll(filepath.Join(home, "go", "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dirs := ToolDirs()
+	found := false
+	for _, d := range dirs {
+		if d == filepath.Join(home, ".local", "bin") {
+			t.Errorf("listed a directory that does not exist: %s", d)
+		}
+		if d == filepath.Join(home, "go", "bin") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("~/go/bin missing from %v", dirs)
+	}
+}
+
+// gosec -quiet is silent on clean code: that is a clean scan, not a broken
+// one. Silence with a failing exit is still a problem worth saying.
+func TestRunSARIFTool_GosecSilenceIsClean(t *testing.T) {
+	dir := t.TempDir()
+	script := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	var clean Result
+	runSARIFTool(context.Background(), dir, "gosec", script("ok", "exit 0"), nil, &clean)
+	if len(clean.Notes) != 0 || len(clean.Findings) != 0 {
+		t.Errorf("a silent clean gosec run left notes: %v", clean.Notes)
+	}
+	var broken Result
+	runSARIFTool(context.Background(), dir, "gosec", script("bad", "exit 2"), nil, &broken)
+	if len(broken.Notes) != 1 || !strings.HasPrefix(broken.Notes[0], "gosec: ") {
+		t.Errorf("a silent failing gosec run should say so: %v", broken.Notes)
+	}
+}

@@ -20,13 +20,16 @@
   import ModelProviders from './ModelProviders.svelte';
   import WorkflowSettings from './WorkflowSettings.svelte';
   import ServerAccessSettings from './ServerAccessSettings.svelte';
+  import SecurityKnowledgeSettings from './SecurityKnowledgeSettings.svelte';
+  import AgentSettings from './AgentSettings.svelte';
 
-  type Section = 'appearance' | 'indexing' | 'input' | 'canvas' | 'models' | 'workflows' | 'mcp' | 'server';
+  type Section = 'appearance' | 'indexing' | 'input' | 'canvas' | 'models' | 'workflows' | 'agents' | 'security' | 'mcp' | 'server';
 
-  type Props = { userId: string };
-  let { userId }: Props = $props();
+  type Props = { userId: string; /** The section to open on. */ initial?: Section };
+  let { userId, initial = 'appearance' }: Props = $props();
 
   let active = $state<Section>('appearance');
+  $effect(() => { active = initial; });
 </script>
 
 <div class="settings-shell">
@@ -82,6 +85,22 @@
     <button
       type="button"
       class="nav-item"
+      class:active={active === 'agents'}
+      onclick={() => (active = 'agents')}
+    >
+      Agents
+    </button>
+    <button
+      type="button"
+      class="nav-item"
+      class:active={active === 'security'}
+      onclick={() => (active = 'security')}
+    >
+      Security knowledge
+    </button>
+    <button
+      type="button"
+      class="nav-item"
       class:active={active === 'mcp'}
       onclick={() => (active = 'mcp')}
     >
@@ -109,6 +128,10 @@
       <ModelProviders />
     {:else if active === 'workflows'}
       <WorkflowSettings />
+    {:else if active === 'agents'}
+      <AgentSettings {userId} />
+    {:else if active === 'security'}
+      <SecurityKnowledgeSettings {userId} />
     {:else if active === 'mcp'}
       <McpExportSettings {userId} />
     {:else if active === 'server'}

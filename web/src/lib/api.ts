@@ -1103,6 +1103,217 @@ export const fileCommits = (projectId: string, path: string, limit = 50) => {
   return req<CommitInfo[]>('GET', `/projects/${projectId}/files/commits?${params}`);
 };
 
+// ---- Changesets (code review, read side — docs/design/code-review.md) ----
+
+export interface Branch {
+  name: string;
+  sha: string;
+  is_default: boolean;
+  is_current: boolean;
+  remote: boolean;
+}
+
+export interface BranchesResponse {
+  branches: Branch[];
+  default: string;
+}
+
+export const listBranches = (projectId: string) =>
+  req<BranchesResponse>('GET', `/projects/${projectId}/files/branches`);
+
+/** Commits on a ref ("" = HEAD), newest first; path narrows to one file. */
+export const listCommits = (projectId: string, ref = '', path = '', limit = 50) => {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (ref) params.set('ref', ref);
+  if (path) params.set('path', path);
+  return req<CommitInfo[]>('GET', `/projects/${projectId}/files/commits?${params}`);
+};
+
+/** The base of a branch changeset: its merge-base with the branch it lands on. */
+export const mergeBase = (projectId: string, head: string, target: string) => {
+  const params = new URLSearchParams({ head, target });
+  return req<{ sha: string }>('GET', `/projects/${projectId}/changesets/merge-base?${params}`);
+};
+
+export type DiffOp = 'ctx' | 'add' | 'del';
+
+export interface DiffLine {
+  op: DiffOp;
+  old?: number;
+  new?: number;
+  text: string;
+}
+
+export interface DiffHunk {
+  old_start: number;
+  old_lines: number;
+  new_start: number;
+  new_lines: number;
+  lines: DiffLine[];
+}
+
+export interface FileDiff {
+  path: string;
+  old_path?: string;
+  /** 'unchanged' is client-side only: a file shown whole because it is not in the changeset. */
+  status: 'added' | 'deleted' | 'modified' | 'renamed' | 'unchanged';
+  binary: boolean;
+  too_large: boolean;
+  generated: boolean;
+  added: number;
+  deleted: number;
+  /** null for binary / too-large, and for generated files in a multi-file diff. */
+  hunks: DiffHunk[] | null;
+}
+
+export interface Changeset {
+  base: string;
+  /** Full SHA, or "working". */
+  head: string;
+  files: FileDiff[];
+  truncated: boolean;
+}
+
+export const WORKING = 'working';
+
+/** base..head as numbered two-sided hunks. head "" or "working" is the working
+ *  copy; base "" is head's parent (HEAD for the working copy). context is
+ *  lines per hunk or 'full'; path restricts to one file (and is the only way a
+ *  generated file gets hunks). */
+export const changesetDiff = (
+  projectId: string,
+  opts: { base?: string; head?: string; context?: number | 'full'; path?: string } = {},
+) => {
+  const params = new URLSearchParams();
+  if (opts.base) params.set('base', opts.base);
+  if (opts.head) params.set('head', opts.head);
+  if (opts.context !== undefined) params.set('context', String(opts.context));
+  if (opts.path) params.set('path', opts.path);
+  return req<Changeset>('GET', `/projects/${projectId}/changesets/diff?${params}`);
+};
+
+// ---- Review comments (code review, write side — slice 4) ----
+
+export interface ChangesetRow {
+  id: string;
+  project_id: string;
+  kind: 'commit' | 'branch' | 'working';
+  base_sha: string;
+  head_sha: string; // full sha, or "working"
+  ref?: string;
+  created_at: string;
+}
+
+export type CommentSide = 'old' | 'new';
+
+export interface ReviewComment {
+  id: string;
+  changeset_id: string;
+  path: string;
+  side: CommentSide;
+  line_start: number;
+  line_end: number;
+  body: string;
+  author: string;
+  author_name?: string;
+  created_at: string;
+  updated_at: string;
+  resolved_at?: string;
+  promoted_owner_type?: 'bug_item' | 'todo_item';
+  promoted_owner_id?: string;
+}
+
+/** The canonical changeset row for base..head, minted on first sight. */
+export const ensureChangeset = (
+  projectId: string,
+  body: { base: string; head: string; kind?: string; ref?: string },
+) => req<ChangesetRow>('POST', `/projects/${projectId}/changesets`, body);
+
+export const listReviewComments = (projectId: string, changesetId: string) =>
+  req<{ changeset: ChangesetRow; comments: ReviewComment[] }>(
+    'GET', `/projects/${projectId}/changesets/${changesetId}/comments`,
+  );
+
+export const createReviewComment = (
+  projectId: string,
+  changesetId: string,
+  body: { path: string; side: CommentSide; line_start: number; line_end: number; body: string },
+) => req<ReviewComment>('POST', `/projects/${projectId}/changesets/${changesetId}/comments`, body);
+
+export const updateReviewComment = (
+  projectId: string,
+  changesetId: string,
+  id: string,
+  body: { body?: string; resolved?: boolean },
+) => req<ReviewComment>('PATCH', `/projects/${projectId}/changesets/${changesetId}/comments/${id}`, body);
+
+export const deleteReviewComment = (projectId: string, changesetId: string, id: string) =>
+  req<void>('DELETE', `/projects/${projectId}/changesets/${changesetId}/comments/${id}`);
+
+export const promoteReviewComment = (
+  projectId: string,
+  changesetId: string,
+  id: string,
+  body: { type: 'bug' | 'todo'; severity?: string; priority?: string },
+) => req<{ comment: ReviewComment; owner_type: 'bug_item' | 'todo_item'; owner_id: string }>(
+  'POST', `/projects/${projectId}/changesets/${changesetId}/comments/${id}/promote`, body,
+);
+
+// ---- Reviews (code review, slice 5) ----
+
+export type ReviewStatus = 'open' | 'changes_requested' | 'approved' | 'merged' | 'abandoned';
+
+export interface Review {
+  id: string;
+  changeset_id: string;
+  project_id: string;
+  status: ReviewStatus;
+  required_approvals: number;
+  author_email?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ReviewDecisionView {
+  id: string;
+  decision: 'approved' | 'rejected';
+  reviewer?: string;
+  reviewer_name?: string;
+  note?: string;
+  commit_sha?: string;
+  created_at: string;
+  counts: boolean;
+  superseded: boolean;
+}
+
+export interface ReviewView {
+  review: Review;
+  changeset?: ChangesetRow;
+  decisions: ReviewDecisionView[];
+  approvals: number;
+  is_author: boolean;
+  mine?: 'approved' | 'rejected';
+  open_comments: number;
+  label: string;
+}
+
+/** Request a review on a changeset (201), or fetch the one that exists (200). */
+export const openReview = (projectId: string, changesetId: string) =>
+  req<ReviewView>('POST', `/projects/${projectId}/changesets/${changesetId}/review`);
+
+/** The review on a changeset; rejects with a 404 message when none was requested. */
+export const getChangesetReview = (projectId: string, changesetId: string) =>
+  req<ReviewView>('GET', `/projects/${projectId}/changesets/${changesetId}/review`);
+
+export const decideReview = (projectId: string, reviewId: string, decision: 'approved' | 'rejected', note = '') =>
+  req<ReviewView>('POST', `/projects/${projectId}/reviews/${reviewId}/decide`, { decision, note });
+
+export const setReviewStatus = (projectId: string, reviewId: string, status: 'merged' | 'abandoned' | 'open') =>
+  req<ReviewView>('POST', `/projects/${projectId}/reviews/${reviewId}/status`, { status });
+
+export const listReviews = (projectId: string, live = true) =>
+  req<{ reviews: ReviewView[] }>('GET', `/projects/${projectId}/reviews${live ? '?live=1' : ''}`);
+
 export const fileMtime = (projectId: string, path: string) => {
   const params = new URLSearchParams({ path });
   return req<FileMtimeResponse>('GET', `/projects/${projectId}/files/mtime?${params}`);
@@ -1491,6 +1702,11 @@ export interface ModelProvider {
   enabled: boolean;
   last_ok_at?: string;
   last_error?: string;
+  /** How agent roles on this model run: 'auto' (a Claude model through
+   *  Claude Code when it is installed and signed in, else CodeDistill's own
+   *  agent), 'builtin' (CodeDistill's own agent, on the API key) or
+   *  'claude-code' (Claude Code, on the Claude subscription). */
+  connector?: 'auto' | 'builtin' | 'claude-code';
 }
 
 /** Five outcomes, not a boolean. context_short is the dangerous one:
@@ -1530,6 +1746,29 @@ export const updateModelProvider = (id: string, p: Partial<ModelProvider> & { ap
 export const deleteModelProvider = (id: string) =>
   req<void>('DELETE', `/model-providers/${id}`);
 
+/** What runs agent roles here (Settings → Agents, the Workflows page). */
+export interface AgentsStatus {
+  connectors: {
+    builtin?: { ready: boolean };
+    claude_code?: { installed: boolean; path?: string; signed_in: boolean; ready: boolean; why?: string };
+  };
+  /** The project runs its own agent program for unbound roles. */
+  custom_command?: boolean;
+  step_limit?: number;
+  roles: {
+    worker_type: string;
+    role: string;
+    /** 'claude-code' | 'built-in' | a custom program's name. */
+    runs_on: string;
+    model?: string;
+    /** Why nothing can run this role; a job will not start until it is fixed. */
+    unavailable?: string;
+  }[];
+}
+
+export const agentsStatus = (projectId?: string) =>
+  req<AgentsStatus>('GET', `/agents${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ''}`);
+
 export const testModelProvider = (id: string) =>
   req<ProbeResult>('POST', `/model-providers/${id}/test`);
 
@@ -1565,6 +1804,9 @@ export interface DiscoverResult {
   described?: ModelDescription;
   error?: string;
   describe_error?: string;
+  /** No key was given: the list was fetched with the key of this other
+   *  provider at the same endpoint. */
+  key_from?: string;
 }
 
 /** Query a provider — saved or not — for the models it offers, and optionally
@@ -1674,6 +1916,55 @@ export interface JobDetail {
 }
 
 export const getJob = (id: string) => req<JobDetail>('GET', `/jobs/${id}`);
+
+// ── Fix scanner findings ───────────────────────────────────────────────────
+
+/** One check CodeDistill ran on a fix: pass, fail, or not applicable. */
+export interface FixCheck { name: string; pass: boolean; na?: boolean; detail: string; }
+
+/** One agent run within a fix job: who, on what, and what it took. Unknown
+ *  numbers are absent, not zero. */
+export interface AgentRun {
+  id: string; role: string; lens?: string; phase: string; round: number;
+  agent: string; model?: string; outcome: string;
+  duration_ms: number; turns?: number; tokens_in?: number; tokens_out?: number;
+  cache_read?: number; cache_write?: number;
+}
+
+/** One item of a fix job, as the job card shows it. */
+export interface FixJobItem {
+  id: string; label: string; owner_type: string; owner_id: string;
+  status: 'queued' | 'running' | 'fixed' | 'waiting' | 'skipped' | 'cancelled';
+  reason?: string; commit_sha?: string; attempt_ref?: string;
+  rounds: number; phase: string;
+  progress_note?: string; last_progress_at?: string;
+  started_at?: string; finished_at?: string;
+  checks: FixCheck[];
+  tests: { new: number; problem: number; guard: number; obsolete: string[] };
+  notes: number; top_note?: string; top_note_count?: number;
+  labels: string[];
+  runs: AgentRun[];
+}
+
+export const getFixJobItems = (jobId: string) =>
+  req<{ job: Job & { branch?: string }; items: FixJobItem[] }>('GET', `/jobs/${jobId}/items`);
+
+/** One source of the security knowledge base, and how fresh it is. */
+export interface SecuritySource {
+  id: string; name: string;
+  state: 'current' | 'retrying' | 'stale' | 'never_synced';
+  every: 'daily' | 'weekly';
+  last_success?: string; last_attempt?: string; last_error?: string;
+  version?: string; entries: number;
+}
+export interface SecurityKnowledge { refresh_enabled: boolean; stale: string[]; sources: SecuritySource[]; }
+export const getSecurityKnowledge = () => req<SecurityKnowledge>('GET', '/security-knowledge');
+export const refreshSecurityKnowledge = () => req<{ started: boolean }>('POST', '/security-knowledge/refresh');
+
+/** Scratchpad items that came from a scanner finding, by item id. */
+export interface FixableItem { finding_id: string; scratchpad_id: string; label: string; severity: string; open: boolean; }
+export const getFixableItems = (projectId: string) =>
+  req<Record<string, FixableItem>>('GET', `/projects/${projectId}/fixable-items`);
 
 /** Pausing is not instant: a model call is atomic, so the stop lands at the
  *  next checkpoint. Refused (409) for a workflow that cannot resume. */

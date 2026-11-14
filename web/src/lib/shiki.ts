@@ -102,3 +102,32 @@ export async function highlight(code: string, lang: BundledLanguage | null): Pro
     return `<pre class="plain"><code>${escapeHTML(code)}</code></pre>`;
   }
 }
+
+// highlightLines highlights a whole text and returns one HTML fragment per
+// line, in order — what a diff renderer needs, where every line is its own
+// row with its own background. One highlighter pass, split afterwards, so a
+// 2,000-line file costs the same as it does in the plain viewer. The input is
+// joined with '\n' (no trailing newline) so the count matches lines.length.
+export async function highlightLines(lines: string[], lang: BundledLanguage | null): Promise<string[]> {
+  if (lines.length === 0) return [];
+  const plain = () => lines.map((l) => escapeHTML(l));
+  if (!lang) return plain();
+  try {
+    const hl = await loadHighlighter();
+    await hl.loadLanguage(lang);
+    const html = hl.codeToHtml(lines.join('\n'), {
+      lang,
+      themes: { dark: 'github-dark', light: 'github-light' },
+      defaultColor: false,
+    });
+    const open = html.indexOf('<code>');
+    const close = html.lastIndexOf('</code>');
+    if (open < 0 || close < 0) return plain();
+    const parts = html.slice(open + '<code>'.length, close).split('\n');
+    if (parts.length !== lines.length) return plain();
+    return parts;
+  } catch (e) {
+    console.warn('shiki highlightLines failed; falling back to plain', e);
+    return plain();
+  }
+}

@@ -947,3 +947,46 @@ func TestReclassifyCarriesOverLog(t *testing.T) {
 		t.Errorf("retired use_case still has %d events (should be re-homed)", len(ue))
 	}
 }
+
+type slowDrafter struct{ delay time.Duration }
+
+func (d slowDrafter) Draft(ctx context.Context, _ CriteriaInput) ([]string, error) {
+	select {
+	case <-time.After(d.delay):
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return []string{"the hash is salted", "old hashes still verify"}, nil
+}
+
+// Accepting from Needs review returns once the classification is committed:
+// drafting the criteria (a model call of tens of seconds on a local model)
+// happens after, and the criteria still arrive.
+func TestAcceptPendingDoesNotWaitForTheCriteriaDraft(t *testing.T) {
+	fx := newFixture(t)
+	fx.clf.category = "BUG"
+	fx.seed(t, "full", "")
+	ctx := context.Background()
+	if err := fx.agent.Process(ctx, "si1"); err != nil {
+		t.Fatalf("process: %v", err)
+	}
+	fx.agent.criteria = slowDrafter{delay: 2 * time.Second}
+
+	start := time.Now()
+	if err := fx.agent.AcceptPending(ctx, "si1", ""); err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	if took := time.Since(start); took > time.Second {
+		t.Errorf("accept took %s: it waited for the draft", took)
+	}
+	got, _ := fx.store.GetScratchpadItem(ctx, "si1")
+	if got.ClassificationState != "classified" || got.DerivedItemID == "" {
+		t.Fatalf("not classified when accept returned: %+v", got)
+	}
+
+	fx.agent.WaitFollowUps()
+	cs, err := fx.store.ListAcceptanceCriteria(ctx, "bug_item", got.DerivedItemID)
+	if err != nil || len(cs) != 2 {
+		t.Fatalf("criteria after the draft = %d, %v", len(cs), err)
+	}
+}

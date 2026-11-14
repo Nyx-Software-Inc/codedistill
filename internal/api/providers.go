@@ -17,6 +17,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"codedistill/internal/domain"
@@ -40,6 +41,22 @@ type providerRequest struct {
 	ContextTokens int    `json:"context_tokens"`
 	IsLocal       bool   `json:"is_local"`
 	Enabled       bool   `json:"enabled"`
+	Connector     string `json:"connector"` // empty: auto
+}
+
+// connectorOf checks the connector a request sets.
+func connectorOf(req providerRequest) (string, string) {
+	c := req.Connector
+	if c == "" {
+		c = domain.ConnectorAuto
+	}
+	if !domain.ValidConnector(c, req.Protocol) {
+		if c == domain.ConnectorClaudeCode {
+			return "", "Claude Code runs Anthropic models only"
+		}
+		return "", "connector must be auto, builtin or claude-code"
+	}
+	return c, ""
 }
 
 // localityOf clamps the caller's "nothing leaves this machine" claim.
@@ -75,6 +92,11 @@ func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	conn, msg := connectorOf(req)
+	if msg != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": msg, "field": "connector"})
+		return
+	}
 	enc, err := s.encryptKey(req.APIKey)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
@@ -84,7 +106,7 @@ func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
 	p := &domain.ModelProvider{
 		ID: id.New(), Name: req.Name, Protocol: req.Protocol,
 		Endpoint: req.Endpoint, Model: req.Model, APIKey: enc,
-		ContextTokens: req.ContextTokens, IsLocal: localityOf(req),
+		ContextTokens: req.ContextTokens, IsLocal: localityOf(req), Connector: conn,
 		Enabled: true, CreatedAt: now, UpdatedAt: now,
 	}
 	if p.ContextTokens <= 0 {
@@ -107,6 +129,11 @@ func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	conn, msg := connectorOf(req)
+	if msg != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": msg, "field": "connector"})
+		return
+	}
 	// An empty key means "leave the stored one": the UI is never shown a key,
 	// so it always sends back empty on an unrelated edit.
 	enc := ""
@@ -120,7 +147,7 @@ func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request) {
 	p := &domain.ModelProvider{
 		ID: r.PathValue("id"), Name: req.Name, Protocol: req.Protocol,
 		Endpoint: req.Endpoint, Model: req.Model, APIKey: enc,
-		ContextTokens: req.ContextTokens, IsLocal: localityOf(req),
+		ContextTokens: req.ContextTokens, IsLocal: localityOf(req), Connector: conn,
 		Enabled: req.Enabled, UpdatedAt: time.Now().UTC(),
 	}
 	if err := s.store.UpdateModelProvider(r.Context(), p); err != nil {
@@ -165,10 +192,17 @@ func (s *Server) testProvider(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
 	defer cancel()
 
-	res := modelprobe.Probe(ctx, nil, modelprobe.Target{
-		Protocol: p.Protocol, Endpoint: p.Endpoint, Model: p.Model,
-		APIKey: key, NeedContext: p.ContextTokens,
-	}, nil)
+	var res modelprobe.Result
+	if p.Protocol == "anthropic" && p.Connector == domain.ConnectorClaudeCode {
+		// Its agents run through Claude Code, on a subscription, with no key:
+		// tested that way.
+		res = probeClaudeCode(ctx, p.Model, p.ContextTokens)
+	} else {
+		res = modelprobe.Probe(ctx, nil, modelprobe.Target{
+			Protocol: p.Protocol, Endpoint: p.Endpoint, Model: p.Model,
+			APIKey: key, NeedContext: p.ContextTokens,
+		}, nil)
+	}
 
 	detail := ""
 	if !res.OK() {
@@ -305,10 +339,20 @@ func (s *Server) discoverModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	out := map[string]any{}
+	// No key here (a Claude model run through Claude Code needs none): list
+	// with the key of another stored provider at the same endpoint. Never a
+	// key stored for one endpoint sent to another.
+	if target.APIKey == "" {
+		if name, key := s.borrowKey(r.Context(), target.Protocol, target.Endpoint, req.ProviderID); key != "" {
+			target.APIKey = key
+			out["key_from"] = name
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	out := map[string]any{}
 	models, err := modelprobe.ListModels(ctx, nil, target)
 	if err != nil {
 		// Reported rather than failed: describing a named model may still
@@ -328,6 +372,25 @@ func (s *Server) discoverModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// borrowKey finds a stored key for this protocol at exactly this endpoint,
+// other than the provider's own, and returns that provider's name with it.
+func (s *Server) borrowKey(ctx context.Context, protocol, endpoint, except string) (string, string) {
+	ps, err := s.store.ListModelProviders(ctx)
+	if err != nil {
+		return "", ""
+	}
+	norm := func(e string) string { return strings.TrimRight(strings.TrimSpace(e), "/") }
+	for _, p := range ps {
+		if p.ID == except || p.APIKey == "" || p.Protocol != protocol || norm(p.Endpoint) != norm(endpoint) {
+			continue
+		}
+		if key, err := s.decryptKey(p.APIKey); err == nil && key != "" {
+			return p.Name, key
+		}
+	}
+	return "", ""
 }
 
 func firstNonEmpty(a, b string) string {

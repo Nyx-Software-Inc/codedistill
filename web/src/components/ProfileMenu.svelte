@@ -18,17 +18,23 @@
   // sign out (multi-user). The window title separately shows the LICENSE holder
   // (anti-theft watermark) — that's handled in App.svelte, not here.
   import * as api from '../lib/api';
+  import { commandsById, runCommand, isVisible, isEnabled, shortcutLabel } from '../lib/commands.svelte';
 
   type Props = {
     me: api.Me | null;
     license: api.LicenseInfo | null;
-    onOpenSettings: () => void;
-    onOpenAdmin: () => void;
-    onOpenStats: () => void;
-    onOpenSystem: () => void;
     onUpdated: () => void;
   };
-  let { me, license, onOpenSettings, onOpenAdmin, onOpenStats, onOpenSystem, onUpdated }: Props = $props();
+  let { me, license, onUpdated }: Props = $props();
+
+  // The navigation rows come from the command registry — same labels, same
+  // visibility rules, same shortcuts as everywhere else. Only the rows that
+  // are flows of this menu (name edit, redeem, sign out) are written here.
+  const NAV = ['help.systemInfo', 'account.stats', 'account.settings', 'account.admin'];
+  const GLYPH: Record<string, string> = {
+    'help.systemInfo': '🧪', 'account.stats': '📊', 'account.settings': '⚙', 'account.admin': '👥',
+  };
+  const nav = $derived(commandsById(NAV));
 
   let open = $state(false);
   let editing = $state(false);
@@ -205,14 +211,16 @@
       {#if redeemMsg}<div class="license redeem-ok">{redeemMsg}</div>{/if}
       {#if redeemErr}<div class="license redeem-err">{redeemErr}</div>{/if}
 
-      {#if !me?.multi_user || me?.is_admin}
-        <button class="item" role="menuitem" onclick={() => { open = false; onOpenSystem(); }}>🧪 About CodeDistill</button>
-      {/if}
-      <button class="item" role="menuitem" onclick={() => { open = false; onOpenStats(); }}>📊 Stats</button>
-      <button class="item" role="menuitem" onclick={() => { open = false; onOpenSettings(); }}>⚙ Settings</button>
-      {#if me?.multi_user && me?.is_admin}
-        <button class="item" role="menuitem" onclick={() => { open = false; onOpenAdmin(); }}>👥 Admin</button>
-      {/if}
+      {#each nav as cmd (cmd.id)}
+        {#if isVisible(cmd)}
+          <button
+            class="item"
+            role="menuitem"
+            disabled={!isEnabled(cmd)}
+            onclick={() => { open = false; runCommand(cmd.id); }}
+          >{GLYPH[cmd.id] ?? ''} {cmd.label}{#if shortcutLabel(cmd)}<span class="kbd">{shortcutLabel(cmd)}</span>{/if}</button>
+        {/if}
+      {/each}
       {#if me?.multi_user}
         <div class="sep"></div>
         <button class="item" role="menuitem" onclick={signOut}>↪ Sign out</button>
@@ -244,6 +252,8 @@
     padding: 7px 8px; font-size: 12px; border-radius: 5px; cursor: pointer;
   }
   .item:hover { background: var(--p-252525); }
+  .item:disabled { opacity: 0.45; cursor: default; }
+  .item .kbd { float: right; margin-left: 12px; color: var(--p-777777); font-size: 11px; }
   .license { font-size: 11px; color: var(--p-888888); padding: 4px 8px; }
   .redeem-ok { color: var(--p-99cc99); white-space: normal; }
   .redeem-err { color: var(--p-ff8888); white-space: normal; }

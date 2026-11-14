@@ -192,6 +192,20 @@
     return (draft.content ?? '').trim().length > 0;
   });
 
+  // A classified capture's text is immutable unless the save is an explicit
+  // correction (internal/api/items.go, the source guard). `correcting` is that
+  // opt-in, the same one SourceItemFields offers on the Provenance tab.
+  let sourceLocked = $derived(item?.classification_state === 'classified');
+  let correcting = $state(false);
+  $effect(() => {
+    void item?.id;
+    correcting = false;
+  });
+  function stopCorrecting() {
+    if (draft && item) draft.content = item.content;
+    correcting = false;
+  }
+
   async function save() {
     if (!draft || !item || saving) return;
     saving = true;
@@ -202,6 +216,7 @@
       await api.updateItem(item.id, {
         name: draft.name ?? '',
         content: draft.content,
+        ...(correcting && draft.content !== item.content ? { correction: true } : {}),
         // If the user left the pre-selected determined type untouched
         // (and no override existed before), persist '' — selecting what
         // the classifier already decided shouldn't pin an override.
@@ -382,8 +397,23 @@
 
       <label class="field">
         <span>Content</span>
-        <textarea bind:value={draft.content} rows="10"></textarea>
+        <textarea bind:value={draft.content} rows="10" readonly={sourceLocked && !correcting}></textarea>
       </label>
+      {#if sourceLocked}
+        <!-- Once classified, the original is immutable provenance (the server
+             refuses a plain edit with 409). Say so where the text is, instead
+             of letting someone type into a box that cannot be saved. -->
+        <div class="locked-note">
+          {#if correcting}
+            Correcting the original. Save records it as a correction in the log.
+            <button type="button" class="link-btn" onclick={stopCorrecting}>Cancel correction</button>
+          {:else}
+            This is the text as it was captured, and it stays that way. Put updates in
+            <strong>Add note</strong> below, or
+            <button type="button" class="link-btn" onclick={() => (correcting = true)}>correct a typo in the original</button>.
+          {/if}
+        </div>
+      {/if}
 
       <label class="field">
         <span>Add note</span>
@@ -468,9 +498,6 @@
         <div><span class="k">ID</span><span class="v mono">{draft.id}</span></div>
       </div>
 
-      {#if saveErr}
-        <div class="err">{saveErr}</div>
-      {/if}
     </section>
     {/if}
 
@@ -487,6 +514,11 @@
   {/if}
 
   {#snippet footer()}
+    {#if saveErr}
+      <!-- Beside Save, not at the foot of the scrolling form: down there a
+           refused save looked exactly like a save that did nothing. -->
+      <span class="err footer-err" role="alert">{saveErr}</span>
+    {/if}
     {#if copyStatus}
       <span class="copy-flash">{copyStatus}</span>
     {/if}
@@ -556,6 +588,26 @@
   .field textarea {
     resize: vertical;
     min-height: 60px;
+  }
+  .locked-note {
+    font-size: 11px;
+    color: var(--p-888888);
+    margin: -4px 0 10px;
+    line-height: 1.4;
+  }
+  .link-btn {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--p-66ccff);
+    cursor: pointer;
+    font: inherit;
+    text-decoration: underline;
+  }
+  .footer-err {
+    margin-right: auto;
+    max-width: 55%;
+    font-size: 12px;
   }
   .copy-md {
     background: transparent;

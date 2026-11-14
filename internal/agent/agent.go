@@ -75,6 +75,9 @@ type Agent struct {
 	// without waiting for the fallback poll. nil-safe (events.Bus
 	// has a nil-receiver Publish).
 	bus *events.Bus
+	// followUps counts classification follow-ups still running in the
+	// background (commitClassifiedThen).
+	followUps sync.WaitGroup
 
 	// exportNotify, when wired, pushes a freshly classifier-derived item to any
 	// configured MCP-export destination — items the agent creates would
@@ -441,7 +444,10 @@ func (a *Agent) AcceptPending(ctx context.Context, itemID, overrideCategory stri
 		Want:      item.ProposedWant,
 		Why:       item.ProposedWhy,
 	}
-	return a.commitClassified(ctx, item, sp.ProjectID, result, item.ClassificationConfidence)
+	// The person is waiting on this one: what follows the commit (drafting
+	// criteria, which is a model call of tens of seconds on a local model, and
+	// the embeddings) runs after the accept has returned.
+	return a.commitClassifiedThen(ctx, item, sp.ProjectID, result, item.ClassificationConfidence, true)
 }
 
 // RejectPending transitions a pending-review item to skipped
@@ -666,6 +672,15 @@ func (a *Agent) markSkipped(ctx context.Context, item *domain.ScratchpadItem, re
 }
 
 func (a *Agent) commitClassified(ctx context.Context, item *domain.ScratchpadItem, projectID string, result Classification, confidence float64) error {
+	return a.commitClassifiedThen(ctx, item, projectID, result, confidence, false)
+}
+
+// commitClassifiedThen commits a classification, then does what follows it:
+// drafting acceptance criteria, syncing to an MCP export, embedding. With
+// later, the follow-ups run in the background once the commit is done: an
+// accept from Needs review used to hold the person for a criteria draft
+// (measured at 18 seconds on a local 7B model) before the item moved.
+func (a *Agent) commitClassifiedThen(ctx context.Context, item *domain.ScratchpadItem, projectID string, result Classification, confidence float64, later bool) error {
 	// Capture the item's PRIOR derivation before we overwrite it. A
 	// re-classification (or any re-derive) mints a fresh derived row; the
 	// old one would otherwise linger with its source_item_id still set,
@@ -711,6 +726,32 @@ func (a *Agent) commitClassified(ctx context.Context, item *domain.ScratchpadIte
 		a.carryOverLog(ctx, priorCategory, priorDerivedID, item.ProposedCategory, derivedID)
 		a.deleteDerived(ctx, priorCategory, priorDerivedID)
 	}
+	if !later {
+		a.afterClassified(ctx, item, projectID, result, derivedID, priorDerivedID)
+		return nil
+	}
+	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Minute)
+	a.followUps.Add(1)
+	go func() {
+		defer a.followUps.Done()
+		defer cancel()
+		a.afterClassified(fctx, item, projectID, result, derivedID, priorDerivedID)
+		// The drafted criteria and the derived item's state show up without
+		// a reload.
+		a.bus.Publish(events.ItemsChanged)
+		a.bus.Publish(events.BugsChanged)
+		a.bus.Publish(events.UseCasesChanged)
+	}()
+	return nil
+}
+
+// WaitFollowUps waits for background follow-ups (see commitClassifiedThen):
+// for tests, and for a clean shutdown.
+func (a *Agent) WaitFollowUps() { a.followUps.Wait() }
+
+// afterClassified is what follows a committed classification. Each step is
+// best-effort: the classification already stands.
+func (a *Agent) afterClassified(ctx context.Context, item *domain.ScratchpadItem, projectID string, result Classification, derivedID, priorDerivedID string) {
 	// Glass-box Phase 2: draft acceptance criteria for the fresh use_case/bug.
 	// Best-effort + only when re-deriving (not on a no-op re-classify to the
 	// same item) so we don't pile duplicate proposals.
@@ -734,5 +775,4 @@ func (a *Agent) commitClassified(ctx context.Context, item *domain.ScratchpadIte
 			a.embedAndStore(ctx, dst, derivedID, text)
 		}
 	}
-	return nil
 }

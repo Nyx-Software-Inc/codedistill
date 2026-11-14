@@ -24,6 +24,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -115,12 +116,16 @@ func launchAppWindow(ctx context.Context, addr string, log *slog.Logger) (done <
 	}
 
 	profile := appProfileDir()
+	enlargeSavedWindow(filepath.Join(profile, "Default", "Preferences"), log)
 	cmd := exec.Command(bin,
 		"--app="+url,
 		"--user-data-dir="+profile,
 		"--no-first-run",
 		"--no-default-browser-check",
 		"--new-window",
+		// The first launch, before the browser has a size of its own to
+		// remember; Chromium keeps it on the screen.
+		"--window-size=1600,1000",
 	)
 	if err := cmd.Start(); err != nil {
 		log.Warn("app window: launch failed — opening a plain tab", "browser", bin, "err", err)
@@ -146,6 +151,83 @@ func launchAppWindow(ctx context.Context, addr string, log *slog.Logger) (done <
 			<-ch
 		}
 	}
+}
+
+// enlargeSavedWindow makes the window the browser will reopen at least a
+// comfortable size. The browser opens an app window where it last was, and
+// its own first guess (about 1380×710 on a 1920×1200 screen) was too small
+// to work in. A window under three quarters of the screen either way grows
+// to 90% × 85% of it, centred; one the user made bigger stays as it is.
+//
+// The profile is CodeDistill's own, so this edits nothing of the user's
+// browser. Anything unexpected in the file leaves it untouched.
+func enlargeSavedWindow(prefsPath string, log *slog.Logger) {
+	b, err := os.ReadFile(prefsPath)
+	if err != nil {
+		return
+	}
+	var prefs map[string]any
+	if json.Unmarshal(b, &prefs) != nil {
+		return
+	}
+	browser, _ := prefs["browser"].(map[string]any)
+	placements, _ := browser["app_window_placement"].(map[string]any)
+	if placements == nil {
+		return
+	}
+	changed := false
+	var walk func(m map[string]any)
+	walk = func(m map[string]any) {
+		for k, v := range m {
+			sub, ok := v.(map[string]any)
+			if !ok || k == "DevToolsApp" {
+				continue
+			}
+			if _, isBounds := sub["work_area_right"]; isBounds {
+				changed = enlargeBounds(sub) || changed
+				continue
+			}
+			walk(sub)
+		}
+	}
+	walk(placements)
+	if !changed {
+		return
+	}
+	out, err := json.Marshal(prefs)
+	if err != nil {
+		return
+	}
+	if err := os.WriteFile(prefsPath, out, 0o600); err == nil {
+		log.Info("app window: enlarged the saved window size")
+	}
+}
+
+// enlargeBounds applies the rule above to one saved placement.
+func enlargeBounds(p map[string]any) bool {
+	num := func(k string) (float64, bool) { v, ok := p[k].(float64); return v, ok }
+	if max, _ := p["maximized"].(bool); max {
+		return false
+	}
+	l, ok1 := num("left")
+	t, ok2 := num("top")
+	r, ok3 := num("right")
+	bt, ok4 := num("bottom")
+	wl, ok5 := num("work_area_left")
+	wt, ok6 := num("work_area_top")
+	wr, ok7 := num("work_area_right")
+	wb, ok8 := num("work_area_bottom")
+	if !(ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8) || wr <= wl || wb <= wt {
+		return false
+	}
+	ww, wh := wr-wl, wb-wt
+	if r-l >= ww*0.75 && bt-t >= wh*0.75 {
+		return false
+	}
+	w, h := float64(int(ww*0.9)), float64(int(wh*0.85))
+	left, top := wl+float64(int((ww-w)/2)), wt+float64(int((wh-h)/2))
+	p["left"], p["top"], p["right"], p["bottom"] = left, top, left+w, top+h
+	return true
 }
 
 // appProfileDir is the dedicated browser profile backing the app window.

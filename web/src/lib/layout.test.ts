@@ -204,12 +204,12 @@ describe('insertionIndex — where a dropped tab lands', () => {
 
 describe('sizes are per pane', () => {
   it('remembers a size for each pane sharing a slot', () => {
-    let l = openPane(openPane(defaultLayout(), 'tree'), 'code');
-    l = setPaneSize(l, 'tree', 200);
-    l = setPaneSize(l, 'code', 500);
+    let l = openPane(openPane(defaultLayout(), 'jobs'), 'inbox');
+    l = setPaneSize(l, 'jobs', 400);
+    l = setPaneSize(l, 'inbox', 500);
     // Sharing one size per slot is what would make switching tabs jump.
-    expect(paneSize(l, 'tree')).toBe(200);
-    expect(paneSize(l, 'code')).toBe(500);
+    expect(paneSize(l, 'jobs')).toBe(400);
+    expect(paneSize(l, 'inbox')).toBe(500);
   });
 
   it('clamps below the declared minimum', () => {
@@ -269,9 +269,9 @@ describe('normalise — stored layouts outlive the code that wrote them', () => 
   });
 
   it('keeps usable sizes and discards the rest', () => {
-    const l = normalise({ sizes: { jobs: 999, code: 'wide', ghost: 300, tree: NaN } });
+    const l = normalise({ sizes: { jobs: 999, inbox: 'wide', ghost: 300, tree: NaN } });
     expect(l.sizes.jobs).toBe(999);
-    expect(paneSize(l, 'code')).toBe(paneDef('code')!.size);
+    expect(paneSize(l, 'inbox')).toBe(paneDef('inbox')!.size);
     expect(l.sizes.ghost).toBeUndefined();
     expect(paneSize(l, 'tree')).toBe(paneDef('tree')!.size);
   });
@@ -289,7 +289,7 @@ describe('purity', () => {
   it('never mutates the layout it was given', () => {
     const l = openPane(defaultLayout(), 'jobs');
     const before = JSON.stringify(l);
-    openPane(l, 'code');
+    openPane(l, 'inbox');
     closePane(l, 'jobs');
     movePane(l, 'jobs', 'left');
     activatePane(l, 'jobs');
@@ -312,12 +312,18 @@ describe('fromLegacy — nobody wakes up to a reset workspace', () => {
     expect(isOpen(fromLegacy({ drawerOpen: false }), 'tree')).toBe(false);
   });
 
-  it('puts the tree in front when both left panes were open', () => {
+  it('drops the old code window, which is no longer a pane', () => {
+    // The code opens in the centre now (docs/design/center-tabs.md); a layout
+    // from when it was a side window keeps the drawer and loses nothing else.
     const l = fromLegacy({ drawerOpen: true, codeCanvasVisible: true, codeCanvasWidth: 410 });
-    // They share the left slot now; the drawer is what the user was looking at.
-    expect(l.slots.left.panes).toContain('code');
+    expect(l.slots.left.panes).toEqual(['tree']);
     expect(l.slots.left.active).toBe('tree');
-    expect(paneSize(l, 'code')).toBe(410);
+  });
+
+  it('drops a stored code pane', () => {
+    const l = normalise({ slots: { left: { panes: ['tree', 'code'], active: 'code' } } });
+    expect(l.slots.left.panes).toEqual(['tree']);
+    expect(l.slots.left.active).toBe('tree');
   });
 
   it('leaves panes that never persisted their state closed', () => {

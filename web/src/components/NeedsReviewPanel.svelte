@@ -52,8 +52,53 @@
      *  has to travel out. Worth the prop: approving work you cannot inspect is a
      *  worse version of the problem this whole change is about. */
     onOpenItem?: (ownerType: string, ownerId: string) => void;
+    /** Open a changeset in the Changes pane (a code review's "look"). */
+    onOpenChangeset?: (cs: { base: string; head: string; label: string; kind: 'commit' | 'branch' | 'working'; ref?: string }) => void;
   };
-  let { projectId, projectName = '', tick = 0, onChanged, onOpenItem }: Props = $props();
+  let { projectId, projectName = '', tick = 0, onChanged, onOpenItem, onOpenChangeset }: Props = $props();
+
+  // Code reviews (docs/design/code-review.md, slice 5): the live ones —
+  // open, changes requested, approved-not-merged. Loaded with the rest.
+  let reviews = $state<api.ReviewView[]>([]);
+  let reviewBusy = $state<Set<string>>(new Set());
+  async function loadReviews() {
+    try {
+      reviews = (await api.listReviews(projectId, true)).reviews;
+    } catch {
+      reviews = [];
+    }
+  }
+  async function decide(v: api.ReviewView, decision: 'approved' | 'rejected') {
+    if (reviewBusy.has(v.review.id)) return;
+    let note = '';
+    if (decision === 'rejected') {
+      const n = await promptDialog('What needs to change? (optional — lands on the review)', {
+        title: 'Request changes', confirmLabel: 'Request changes', danger: true,
+      });
+      if (n === null) return;
+      note = n;
+    }
+    reviewBusy = new Set(reviewBusy).add(v.review.id);
+    try {
+      await api.decideReview(projectId, v.review.id, decision, note);
+      await loadReviews();
+      onChanged();
+    } catch (e) {
+      void alertDialog(`Review failed: ${e}`);
+    } finally {
+      const next = new Set(reviewBusy);
+      next.delete(v.review.id);
+      reviewBusy = next;
+    }
+  }
+  function look(v: api.ReviewView) {
+    const cs = v.changeset;
+    if (!cs || !onOpenChangeset) return;
+    onOpenChangeset({ base: cs.base_sha, head: cs.head_sha, label: v.label, kind: cs.kind, ref: cs.ref });
+  }
+  const REVIEW_STATUS: Record<string, string> = {
+    open: 'open', changes_requested: 'changes requested', approved: 'approved', merged: 'merged', abandoned: 'abandoned',
+  };
 
   let inbox = $state<ScratchpadItem[]>([]);
   let queue = $state<api.ReviewQueueResponse | null>(null);
@@ -86,6 +131,7 @@
         api.listInbox(),
         api.getReviewQueue(projectId),
         api.listScratchpads(projectId),
+        loadReviews(),
       ]);
       const names: Record<string, string> = {};
       for (const p of pads) names[p.id] = p.name;
@@ -214,6 +260,36 @@
 
     <section class="blk">
       <div class="blk-head">
+        <strong>Code reviews</strong>
+        <span class="count">{reviews.length}</span>
+        <span class="hint">changesets under review — approving one signs off every item it covers</span>
+      </div>
+      {#if reviews.length === 0}
+        <p class="empty">No open code reviews. Pick a changeset in the Changes pane and request a review.</p>
+      {:else}
+        {#each reviews as v (v.review.id)}
+          <article class="entry rq">
+            <span class="band rv {v.review.status}" title="Review status">{REVIEW_STATUS[v.review.status] ?? v.review.status}</span>
+            <span class="subj" title={v.label}>
+              {v.label}
+              <span class="domain">{v.approvals}/{v.review.required_approvals} approvals{#if v.open_comments > 0} · 💬 {v.open_comments}{/if}</span>
+            </span>
+            <span class="actions">
+              {#if v.review.status !== 'approved'}
+                <button class="ok" disabled={reviewBusy.has(v.review.id) || v.mine === 'approved'} onclick={() => void decide(v, 'approved')}>✓ Approve</button>
+              {/if}
+              <button class="danger" disabled={reviewBusy.has(v.review.id) || v.mine === 'rejected'} onclick={() => void decide(v, 'rejected')}>✗ Changes</button>
+            </span>
+            {#if onOpenChangeset && v.changeset}
+              <button class="open" title="Open this changeset in the Changes pane" aria-label="Open changeset" onclick={() => look(v)}><Icon name="diff" size={11} /></button>
+            {/if}
+          </article>
+        {/each}
+      {/if}
+    </section>
+
+    <section class="blk">
+      <div class="blk-head">
         <strong>Awaiting your sign-off</strong>
         <span class="count">{signoff.length}</span>
         {#if queue}
@@ -303,6 +379,10 @@
   .small { font-size: 11px; margin: 6px 2px 0; }
   .err { color: var(--p-ff8888); font-size: 12px; }
   .blk { margin-bottom: 18px; }
+  .band.rv { text-transform: none; font-size: 10px; }
+  .band.rv.open { color: var(--p-99ccff); background: var(--p-1e3a52); }
+  .band.rv.changes_requested { color: var(--diff-del-fg); background: var(--diff-del-gutter); }
+  .band.rv.approved { color: var(--diff-add-fg); background: var(--diff-add-gutter); }
   .blk-head {
     display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px;
     color: var(--p-e8e8e8); font-size: 13px;

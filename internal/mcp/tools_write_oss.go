@@ -21,3 +21,7 @@ import "github.com/mark3labs/mcp-go/server"
 // are a paid feature, physically absent from the community edition. Read
 // tools remain available, so "MCP read free" still holds.
 func (t *Tools) registerWriteTools(_ *server.MCPServer) {}
+
+// registerJobTools is a no-op too: agents started by the Conductor are a paid
+// feature, and the community edition has no Conductor to start them.
+func (t *Tools) registerJobTools(_ *server.MCPServer, _ bool) {}

@@ -15,6 +15,7 @@
   import { onMount, onDestroy } from 'svelte';
   import * as api from '../lib/api';
   import type { Job, JobDetail, Workflow } from '../lib/api';
+  import FixJobCard from './FixJobCard.svelte';
 
   // The job monitor.
   //
@@ -38,8 +39,10 @@
     /** Open the review for a finished decompose. A run whose proposals have
      *  nowhere to be accepted is a job that did not finish. */
     onReview?: (jobId: string) => void;
+    /** Open a work item from a run that worked on it (Fix scanner findings). */
+    onOpenItem?: (ownerType: string, ownerId: string) => void;
   };
-  let { projectId, onNewJob, reloadKey = 0, onReview }: Props = $props();
+  let { projectId, onNewJob, reloadKey = 0, onReview, onOpenItem }: Props = $props();
 
   type Tab = 'running' | 'history';
   let tab = $state<Tab>('running');
@@ -280,7 +283,11 @@
 
         {#if j.error}<p class="joberr">{j.error}</p>{/if}
 
-        {#if openJob === j.id && detail && detail.job.id === j.id}
+        {#if openJob === j.id && j.type === 'fix_findings'}
+          <!-- A fix run's story is its items, not its phases: what each came
+               to, how it was checked, and what it cost. -->
+          <FixJobCard jobId={j.id} running={j.status === 'running'} {onOpenItem} />
+        {:else if openJob === j.id && detail && detail.job.id === j.id}
           <div class="phases">
             {#each detail.phases as ph (ph.id)}
               {@const norm = detail.norms.find((n) => n.phase === ph.phase)}
@@ -383,7 +390,7 @@
   .when { padding-top: 0.05rem; }
   .meta { padding-top: 0.2rem; }
   .sep { color: var(--p-555555); }
-  .who { font-family: var(--mono, ui-monospace); }
+  .who { font-family: ui-monospace, monospace; }
 
   .yield {
     padding: 0.25rem 0.6rem 0 2rem;

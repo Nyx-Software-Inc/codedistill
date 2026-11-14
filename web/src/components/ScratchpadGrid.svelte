@@ -19,7 +19,7 @@
     type TypeColorsConfig,
   } from '../lib/typeColors';
   import type { Blocker } from '../lib/api';
-  import type { ScratchpadItem, CodeAnchor } from '../lib/types';
+  import type { ScratchpadItem, CodeAnchor, DerivedStatus } from '../lib/types';
   import { copyToClipboard, itemToMarkdown, plainContent } from '../lib/markdown';
   import { draftingCriteria } from '../lib/draftingStore';
   import { withNumberPrefix } from '../lib/itemNumberLabel';
@@ -41,6 +41,9 @@
     /** Offered only on items the document reader can actually read — a button
      *  that fails after you press it is worse than no button. */
     onDecompose?: (item: ScratchpadItem) => void;
+    /** Items that came from a scanner finding, by id. */
+    fixable?: Record<string, import('../lib/api').FixableItem>;
+    onFixWithAgent?: (item: ScratchpadItem) => void;
     // Triggered from the in-card pending-review banner. The agent's
     // proposed_category is offered as the headline Accept option; the
     // dropdown lets the user reclassify to any of the other categories.
@@ -73,7 +76,7 @@
     // Cards show a small status chip when the derived item has moved
     // past its initial open state — in-progress, terminal, or dropped —
     // so the canvas reflects lifecycle without opening the drawer.
-    derivedStatus?: Map<string, { kind: string; status: string; subject?: string; number?: number }>;
+    derivedStatus?: Map<string, DerivedStatus>;
     // Canvas rework slice B: source item id -> latest activity-log note summary,
     // shown as the card's pulse line (supersedes the frozen annotations blob).
     latestNoteBySource?: Map<string, string>;
@@ -114,6 +117,7 @@
   };
   let {
     items, onLayoutChange, onDelete, onHide, onUnhide, onEdit, onMoveItem, onReprocess, onDecompose,
+    fixable = {}, onFixWithAgent,
     onOpenSimilar, onDismissSimilar, onGroupSimilar,
     flashItemId = null, itemAnchors = {}, onAnchorBadge, onAnchorBadgeHover,
     doneSourceIds,
@@ -237,6 +241,19 @@
   // Canvas rework slice A: the card's title reflects the derived work item's
   // subject (the living thing), falling back to the source's own name/label for
   // items that haven't derived a work item yet (unclassified/pending/skipped).
+  // A KB card's body is the knowledge itself, so it shows the entry's current
+  // content; the capture it came from is immutable once classified, and
+  // showing that would leave an edited entry looking unedited on the canvas.
+  // Every other kind keeps the original capture as its body.
+  function cardBody(item: ScratchpadItem): string {
+    const d = derivedStatus?.get(item.id);
+    return d?.kind === 'kb' && d.body != null ? d.body : (item.content ?? '');
+  }
+  function bodyEdited(item: ScratchpadItem): boolean {
+    const d = derivedStatus?.get(item.id);
+    return d?.kind === 'kb' && d.body != null && d.body.trim() !== (item.content ?? '').trim();
+  }
+
   function cardTitle(item: ScratchpadItem): string {
     const d = derivedStatus?.get(item.id);
     const base = d?.subject || item.name || '';
@@ -1128,6 +1145,15 @@
              nothing; an overlay costs zero width, so the title gets the whole
              row. Trello and Notion solve the same problem the same way. -->
         <div class="hover-actions" data-grid-nodrag>
+        {#if onFixWithAgent && fixable?.[item.id]?.open}
+          <button
+            class="icon-btn"
+            data-grid-nodrag
+            onclick={(e) => { e.stopPropagation(); onFixWithAgent(item); }}
+            title="Fix with agent — an agent fixes this scanner finding on a branch of its own; CodeDistill checks the fix"
+            aria-label="Fix with agent"
+          ><Icon name="analysis" size={12} /></button>
+        {/if}
         {#if onDecompose && looksLikeDocument(item)}
           <button
             class="icon-btn decompose"
@@ -1343,7 +1369,10 @@
             >{savingBlob === item.id ? 'Saving…' : 'Download'}</button>
           </div>
         {:else}
-          <pre>{item.content}</pre>
+          <pre>{cardBody(item)}</pre>
+          {#if bodyEdited(item)}
+            <span class="edited-note" title="Edited since it was captured. The original is on the Provenance tab.">edited</span>
+          {/if}
         {/if}
         {#each [cardTags(item)] as tags}
           {#if tags.length > 0}

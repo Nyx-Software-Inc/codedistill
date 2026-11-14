@@ -23,7 +23,7 @@ import (
 )
 
 const providerColumns = `id, name, protocol, endpoint, model, api_key,
-	context_tokens, is_local, enabled, last_ok_at, last_error, created_at, updated_at`
+	context_tokens, is_local, enabled, last_ok_at, last_error, created_at, updated_at, connector`
 
 // CreateModelProvider stores a connection. The caller encrypts api_key before
 // it arrives here: this layer must not be the place a plaintext key can slip
@@ -37,10 +37,10 @@ func (s *Store) CreateModelProvider(ctx context.Context, p *domain.ModelProvider
 	}
 	_, err := s.DB.ExecContext(ctx,
 		`INSERT INTO model_providers (`+providerColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.ID, p.Name, p.Protocol, p.Endpoint, p.Model, p.APIKey,
 		p.ContextTokens, boolInt(p.IsLocal), boolInt(p.Enabled),
-		nil, nil, p.CreatedAt, p.UpdatedAt)
+		nil, nil, p.CreatedAt, p.UpdatedAt, connectorOrAuto(p.Connector))
 	if err != nil {
 		return fmt.Errorf("create provider: %w", err)
 	}
@@ -57,9 +57,9 @@ func (s *Store) UpdateModelProvider(ctx context.Context, p *domain.ModelProvider
 		return fmt.Errorf("update provider: unknown protocol %q", p.Protocol)
 	}
 	q := `UPDATE model_providers SET name = ?, protocol = ?, endpoint = ?,
-	        model = ?, context_tokens = ?, is_local = ?, enabled = ?, updated_at = ?`
+	        model = ?, context_tokens = ?, is_local = ?, enabled = ?, updated_at = ?, connector = ?`
 	args := []any{p.Name, p.Protocol, p.Endpoint, p.Model, p.ContextTokens,
-		boolInt(p.IsLocal), boolInt(p.Enabled), p.UpdatedAt}
+		boolInt(p.IsLocal), boolInt(p.Enabled), p.UpdatedAt, connectorOrAuto(p.Connector)}
 	if p.APIKey != "" {
 		q += `, api_key = ?`
 		args = append(args, p.APIKey)
@@ -224,7 +224,7 @@ func (s *Store) providerForWorker(ctx context.Context, q string, args ...any) (*
 func prefixed() string {
 	return `p.id, p.name, p.protocol, p.endpoint, p.model, p.api_key,
 		p.context_tokens, p.is_local, p.enabled, p.last_ok_at, p.last_error,
-		p.created_at, p.updated_at`
+		p.created_at, p.updated_at, p.connector`
 }
 
 func scanProvider(r rowScanner) (*domain.ModelProvider, error) {
@@ -234,7 +234,7 @@ func scanProvider(r rowScanner) (*domain.ModelProvider, error) {
 	var isLocal, enabled int
 	if err := r.Scan(&p.ID, &p.Name, &p.Protocol, &p.Endpoint, &p.Model, &p.APIKey,
 		&p.ContextTokens, &isLocal, &enabled, &lastOK, &lastErr,
-		&p.CreatedAt, &p.UpdatedAt); err != nil {
+		&p.CreatedAt, &p.UpdatedAt, &p.Connector); err != nil {
 		return nil, err
 	}
 	p.IsLocal, p.Enabled = isLocal != 0, enabled != 0
@@ -247,4 +247,11 @@ func scanProvider(r rowScanner) (*domain.ModelProvider, error) {
 		p.LastOKAt = &t
 	}
 	return p, nil
+}
+
+func connectorOrAuto(c string) string {
+	if c == "" {
+		return domain.ConnectorAuto
+	}
+	return c
 }

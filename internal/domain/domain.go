@@ -684,6 +684,77 @@ type ReviewDecision struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// Changeset is the unit of code review (docs/design/code-review.md): base..head
+// in one of three shapes. Stored canonical — full SHAs, HeadSHA "working" for
+// the working copy with BaseSHA the HEAD it was reviewed against — so the same
+// commit picked two ways is one row. Ref is the branch name for a branch
+// changeset, informational.
+type Changeset struct {
+	ID        string    `json:"id"`
+	ProjectID string    `json:"project_id"`
+	Kind      string    `json:"kind"` // "commit" | "branch" | "working"
+	BaseSHA   string    `json:"base_sha"`
+	HeadSHA   string    `json:"head_sha"`
+	Ref       string    `json:"ref,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// ReviewComment is a remark anchored to lines of one file of a changeset.
+// Side is "old" or "new": a remark about a deleted line is a remark about the
+// deletion, and the line numbers are that side's. Author is a user id (the
+// local user in single-user mode). PromotedOwnerType/ID name the bug or todo
+// the comment became, if any — the CodeDistill move: a review remark turns
+// into trackable work with its code anchor already attached.
+type ReviewComment struct {
+	ID                string     `json:"id"`
+	ChangesetID       string     `json:"changeset_id"`
+	Path              string     `json:"path"`
+	Side              string     `json:"side"` // "old" | "new"
+	LineStart         int        `json:"line_start"`
+	LineEnd           int        `json:"line_end"`
+	Body              string     `json:"body"`
+	Author            string     `json:"author"`
+	AuthorName        string     `json:"author_name,omitempty"` // resolved for display, not stored
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
+	ResolvedAt        *time.Time `json:"resolved_at,omitempty"`
+	PromotedOwnerType string     `json:"promoted_owner_type,omitempty"`
+	PromotedOwnerID   string     `json:"promoted_owner_id,omitempty"`
+}
+
+// Review statuses. A review is derived from its decisions while it is live
+// (open / changes_requested / approved); merged and abandoned are terminal
+// and set by hand — CodeDistill records a merge, it does not perform one.
+const (
+	ReviewOpen             = "open"
+	ReviewChangesRequested = "changes_requested"
+	ReviewApproved         = "approved"
+	ReviewMerged           = "merged"
+	ReviewAbandoned        = "abandoned"
+)
+
+// Review is the approval process on one changeset (docs/design/code-review.md).
+// RequiredApprovals is fixed when the review opens: one in single-user mode,
+// two in a multi-user workspace, where the author's own approval does not
+// count. AuthorEmail is the head commit's author, so that exclusion can be
+// applied; the LLM authoring a job branch is an author like any other.
+type Review struct {
+	ID                string    `json:"id"`
+	ChangesetID       string    `json:"changeset_id"`
+	ProjectID         string    `json:"project_id"`
+	Status            string    `json:"status"`
+	RequiredApprovals int       `json:"required_approvals"`
+	AuthorEmail       string    `json:"author_email,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+}
+
+// OwnerRef names an item by its owner type and id.
+type OwnerRef struct {
+	OwnerType string `json:"owner_type"`
+	OwnerID   string `json:"owner_id"`
+}
+
 // ReviewFlag is a persistent "this change needs another look" marker, distinct
 // from a ReviewDecision (a human verdict that feeds the trust dial) and from the
 // computed risk score. While active (ClearedAt == nil) it forces the item into

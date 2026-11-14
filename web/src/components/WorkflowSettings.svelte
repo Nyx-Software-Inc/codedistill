@@ -11,6 +11,8 @@
   import type { Workflow, ModelProvider } from '../lib/api';
 
   let workflows = $state<Workflow[]>([]);
+  /** How each agent role will run, or why it cannot (Fix scanner findings). */
+  let agents = $state<api.AgentsStatus | null>(null);
   let providers = $state<ModelProvider[]>([]);
   let loaded = $state(false);
   let error = $state('');
@@ -21,7 +23,8 @@
 
   async function load() {
     try {
-      const [wfs, ps] = await Promise.all([api.listWorkflows(), api.listModelProviders()]);
+      const [wfs, ps, ag] = await Promise.all([api.listWorkflows(), api.listModelProviders(), api.agentsStatus().catch(() => null)]);
+      agents = ag;
       workflows = wfs ?? [];
       providers = (ps ?? []).filter((p) => p.enabled);
       error = '';
@@ -32,6 +35,18 @@
     }
   }
   $effect(() => { void load(); });
+
+  /** The agent role behind a step of Fix scanner findings, if it is one. */
+  function roleOf(wf: Workflow, workerType: string) {
+    if (wf.id !== 'fix_findings') return undefined;
+    return agents?.roles.find((r) => r.worker_type === workerType);
+  }
+
+  function via(runsOn: string): string {
+    if (runsOn === 'claude-code') return 'Claude Code';
+    if (runsOn === 'built-in') return "CodeDistill's agent";
+    return runsOn;
+  }
 
   async function choose(wf: Workflow, ordinal: number, providerId: string) {
     try {
@@ -87,6 +102,12 @@
                   <option value={p.id}>{p.name}{p.is_local ? '' : ' (off this machine)'}</option>
                 {/each}
               </select>
+              {#if roleOf(w, st.worker_type)?.unavailable}
+                <p class="short">Cannot run: {roleOf(w, st.worker_type)?.unavailable}</p>
+              {:else if roleOf(w, st.worker_type)}
+                {@const role = roleOf(w, st.worker_type)!}
+                <p class="need">runs through {via(role.runs_on)}{role.model ? ` · ${role.model}` : ''}</p>
+              {/if}
               {#if st.needs_context && st.context_tokens && st.context_tokens < st.needs_context}
                 <!-- Caught here rather than as a truncated answer forty minutes
                      into a run, which is the failure this product has actually

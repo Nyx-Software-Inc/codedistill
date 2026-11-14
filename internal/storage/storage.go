@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"codedistill/internal/domain"
+	"codedistill/internal/seckb"
 )
 
 // ErrNotFound is returned by Get* and Delete* methods when the target row is missing.
@@ -312,6 +313,8 @@ type Storage interface {
 	UpsertCodeFinding(ctx context.Context, f *domain.CodeFinding) (bool, error)
 	ResolveStaleFindings(ctx context.Context, projectID, source string, seen map[string]bool, now time.Time) (int, error)
 	ListCodeFindings(ctx context.Context, projectID string) ([]*domain.CodeFinding, error)
+	// ListPushedCodeFindings: every finding pushed to a scratchpad, any status.
+	ListPushedCodeFindings(ctx context.Context, projectID string) ([]*domain.CodeFinding, error)
 	GetCodeFinding(ctx context.Context, id string) (*domain.CodeFinding, error)
 	// HasOpenSecurityFinding backs the governance security gate: any live
 	// (unresolved, not dismissed) finding with security_severity >= minScore.
@@ -336,6 +339,37 @@ type Storage interface {
 	FinishJobPhases(ctx context.Context, jobID, errMsg string, at time.Time) error
 	ListJobPhases(ctx context.Context, jobID string) ([]*domain.JobPhase, error)
 	PhaseNorms(ctx context.Context, projectID, workflowID string) ([]domain.PhaseNorm, error)
+
+	// Job items — what happened to each thing a job worked through, for runs
+	// that work many items (fix_findings). See internal/storage/sqlite/job_items.go.
+	CreateJobItem(ctx context.Context, it *domain.JobItem) error
+	UpdateJobItem(ctx context.Context, it *domain.JobItem) error
+	ListJobItems(ctx context.Context, jobID string) ([]*domain.JobItem, error)
+	RunningJobItem(ctx context.Context, jobID string) (*domain.JobItem, error)
+	TouchJobItemProgress(ctx context.Context, jobID, note string, at time.Time) (bool, error)
+	// Claims an agent made, each challenger lens's verdicts on them, and what
+	// every agent run consumed. See internal/storage/sqlite/job_claims.go.
+	CreateJobClaim(ctx context.Context, c *domain.JobClaim) error
+	ListJobClaims(ctx context.Context, jobItemID string, round int, phase string) ([]*domain.JobClaim, error)
+	CreateClaimVerdict(ctx context.Context, v *domain.ClaimVerdict) error
+	ListClaimVerdicts(ctx context.Context, jobItemID string, round int, phase, lens string) ([]*domain.ClaimVerdict, error)
+	SetVerdictPoint(ctx context.Context, verdictID, pointID string) error
+	CreateJobPoint(ctx context.Context, p *domain.JobPoint) error
+	SetJobPointKind(ctx context.Context, id, kind string) error
+	ListJobPoints(ctx context.Context, jobItemID string) ([]*domain.JobPoint, error)
+	CreateJobTest(ctx context.Context, t *domain.JobTest) error
+	ListJobTests(ctx context.Context, jobItemID string) ([]*domain.JobTest, error)
+
+	// The security knowledge base (internal/seckb).
+	GetSecuritySource(ctx context.Context, id string) (*seckb.SourceRow, error)
+	ListSecuritySources(ctx context.Context) ([]*seckb.SourceRow, error)
+	SaveSecuritySource(ctx context.Context, r *seckb.SourceRow) error
+	ReplaceSecurityEntries(ctx context.Context, source, version string, es []seckb.Entry) error
+	ReplaceKEV(ctx context.Context, version string, ks []seckb.KEV) error
+	GetSecurityEntry(ctx context.Context, key string) (*seckb.Entry, error)
+	GetKEV(ctx context.Context, cve string) (*seckb.KEV, error)
+	CreateAgentRun(ctx context.Context, r *domain.AgentRun) error
+	ListAgentRuns(ctx context.Context, jobID string) ([]*domain.AgentRun, error)
 
 	// Decomposition — a document's proposed work items, which are NOT items
 	// until a human accepts one. See internal/storage/sqlite/decompose.go.
@@ -522,6 +556,43 @@ type Storage interface {
 	// LatestReviewDecision returns the owner's most recent decision, or
 	// ErrNotFound when none exists.
 	LatestReviewDecision(ctx context.Context, ownerType, ownerID string) (*domain.ReviewDecision, error)
+
+	// Code review (docs/design/code-review.md, slice 4). EnsureChangeset
+	// returns the existing row for (project, base, head) or creates one,
+	// filling cs.ID either way.
+	EnsureChangeset(ctx context.Context, cs *domain.Changeset) error
+	FindChangeset(ctx context.Context, projectID, baseSHA, headSHA string) (*domain.Changeset, error)
+	GetChangeset(ctx context.Context, id string) (*domain.Changeset, error)
+	CreateReviewComment(ctx context.Context, c *domain.ReviewComment) error
+	GetReviewComment(ctx context.Context, id string) (*domain.ReviewComment, error)
+	// ListReviewComments returns a changeset's comments ordered by path, line
+	// and time, so a thread reads in order.
+	ListReviewComments(ctx context.Context, changesetID string) ([]domain.ReviewComment, error)
+	// UpdateReviewComment writes the mutable fields: body, updated_at,
+	// resolved_at, promoted_owner_type/id.
+	UpdateReviewComment(ctx context.Context, c *domain.ReviewComment) error
+	DeleteReviewComment(ctx context.Context, id string) error
+
+	// Reviews (slice 5). ListReviewDecisions returns every decision on an
+	// owner, newest first — the review's status is computed from them.
+	CreateReview(ctx context.Context, rv *domain.Review) error
+	GetReview(ctx context.Context, id string) (*domain.Review, error)
+	GetReviewByChangeset(ctx context.Context, changesetID string) (*domain.Review, error)
+	// UpdateReview writes status and updated_at.
+	UpdateReview(ctx context.Context, rv *domain.Review) error
+	// ListReviews returns a project's reviews, newest first; statuses narrows
+	// (nil = all).
+	ListReviews(ctx context.Context, projectID string, statuses []string) ([]domain.Review, error)
+	ListReviewDecisions(ctx context.Context, ownerType, ownerID string) ([]domain.ReviewDecision, error)
+	// SetChangesetCommits replaces the commits a changeset covers.
+	SetChangesetCommits(ctx context.Context, changesetID string, shas []string) error
+	ListChangesetCommits(ctx context.Context, changesetID string) ([]string, error)
+	// OpenReviewForCommits returns a live (open or changes_requested) review
+	// whose changeset covers any of the commits, or ErrNotFound.
+	OpenReviewForCommits(ctx context.Context, projectID string, shas []string) (*domain.Review, error)
+	// ItemsByCommits returns the project's items anchored (kind "commit") to
+	// any of the commits.
+	ItemsByCommits(ctx context.Context, projectID string, shas []string) ([]domain.OwnerRef, error)
 
 	// Review flags (migration 0059) — persistent "needs another look" markers
 	// that route an item into the review queue (attention only, never trust

@@ -17,7 +17,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 	"time"
 	"unicode/utf8"
 
@@ -153,38 +152,4 @@ func (s *Server) getFileMtime(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, fileMtimeResponse{Path: path, Mtime: t.UTC().Format(time.RFC3339Nano)})
-}
-
-func (s *Server) listFileCommits(w http.ResponseWriter, r *http.Request) {
-	repo, ok := s.openProjectRepo(w, r)
-	if !ok {
-		return
-	}
-	path := r.URL.Query().Get("path")
-	if path == "" {
-		writeMsg(w, http.StatusBadRequest, "path query param is required")
-		return
-	}
-	limit := 50
-	if v := r.URL.Query().Get("limit"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n <= 0 {
-			writeMsg(w, http.StatusBadRequest, "limit must be a positive integer")
-			return
-		}
-		limit = n
-	}
-	commits, err := repo.FileCommits(path, limit)
-	if err != nil {
-		status := http.StatusInternalServerError
-		switch {
-		case errors.Is(err, codegit.ErrNotFound):
-			status = http.StatusNotFound
-		case errors.Is(err, codegit.ErrPathEscape):
-			status = http.StatusBadRequest
-		}
-		writeErr(w, status, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, commits)
 }

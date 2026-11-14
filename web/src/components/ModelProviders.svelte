@@ -54,10 +54,29 @@
 
   const vendor = $derived(vendors.find((v) => v.id === vendorId));
 
+  /** A Claude model whose agents run only through Claude Code: no API key. */
+  const subscriptionOnly = $derived(draft.protocol === 'anthropic' && draft.connector === 'claude-code');
+
+  /** Claude Code's names for the newest model of each family: a role set to
+   *  one moves to a new release by itself, so nothing here goes stale. */
+  const CLAUDE_ALIASES = [
+    { id: 'fable', label: 'newest Fable' },
+    { id: 'opus', label: 'newest Opus' },
+    { id: 'sonnet', label: 'newest Sonnet' },
+    { id: 'haiku', label: 'newest Haiku' },
+  ];
+
+  /** Whose key listed the models, when this provider has none of its own. */
+  let keyFrom = $state('');
+
   type Draft = {
     name: string; protocol: string; endpoint: string;
     model: string; api_key: string; context_tokens: number; is_local: boolean;
+    connector: 'auto' | 'builtin' | 'claude-code';
   };
+
+  /** Whether Claude Code is here, for the connector choice on a Claude model. */
+  let claude = $state<api.AgentsStatus['connectors']['claude_code'] | undefined>(undefined);
 
   /** AWS's three fields, packed into draft.api_key on save. Held apart here
    *  only so the form can have three inputs; the wire format is one secret. */
@@ -97,6 +116,7 @@
   function pickVendor(id: string) {
     vendorId = id;
     discovered = [];
+    keyFrom = '';
     discoverError = '';
     describedCtx = 0;
     const v = vendors.find((x) => x.id === id);
@@ -122,7 +142,10 @@
         provider_id: editing && editing !== 'new' ? editing : undefined,
       });
       discovered = r.models ?? [];
-      if (r.error) discoverError = r.error;
+      keyFrom = r.key_from ?? '';
+      if (r.error) discoverError = subscriptionOnly && !r.key_from
+        ? 'Listing Claude models needs an API key, and none is stored for this endpoint. Pick a name above or type a model id.'
+        : r.key_from ? `${r.error} (asked with the API key of ${r.key_from})` : r.error;
       // A window the provider STATED, which is worth far more than one typed.
       const ctx = r.described?.context_length ?? 0;
       if (ctx > 0) {
@@ -153,7 +176,7 @@
   function blankDraft(): Draft {
     return {
       name: '', protocol: 'ollama', endpoint: 'http://localhost:11434',
-      model: '', api_key: '', context_tokens: 16384, is_local: true,
+      model: '', api_key: '', context_tokens: 16384, is_local: true, connector: 'auto',
     };
   }
 
@@ -163,6 +186,7 @@
     try {
       providers = (await api.listModelProviders()) ?? [];
       if (vendors.length === 0) vendors = (await api.listVendors()) ?? [];
+      claude = (await api.agentsStatus().catch(() => null))?.connectors.claude_code;
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -180,6 +204,7 @@
     editing = 'new';
     draft = blankDraft();
     discovered = [];
+    keyFrom = '';
     discoverError = '';
     describedCtx = 0;
     vendorId = 'ollama';
@@ -190,15 +215,27 @@
   function startEdit(p: ModelProvider) {
     aws = { access_key_id: '', secret_access_key: '', session_token: '' };
     editing = p.id;
+    discovered = [];
+    keyFrom = '';
+    discoverError = '';
+    describedCtx = 0;
+    // The vendor this connection is to: the one at this endpoint, else the
+    // first that speaks its protocol. Left as it was, the form described the
+    // last vendor picked (Ollama, by default) and hid the key field.
+    const same = vendors.filter((v) => v.supported && v.protocol === p.protocol);
+    vendorId = (same.find((v) => v.default_endpoint === p.endpoint) ?? same[0])?.id ?? vendorId;
     // api_key is deliberately blank: the UI is never given the stored key, and
     // sending an empty one back means "leave it alone".
     draft = {
       name: p.name, protocol: p.protocol, endpoint: p.endpoint, model: p.model,
       api_key: '', context_tokens: p.context_tokens, is_local: p.is_local,
+      connector: p.connector ?? 'auto',
     };
   }
 
   async function save() {
+    // Claude Code runs Claude models only; the server refuses it on others.
+    if (draft.protocol !== 'anthropic' && draft.connector === 'claude-code') draft.connector = 'auto';
     try {
       if (editing === 'new') {
         await api.createModelProvider({ ...draft, enabled: true });
@@ -301,6 +338,42 @@
         {#if vendor?.note}
           <p class="vendornote">{vendor.note}</p>
         {/if}
+        {#if draft.protocol === 'anthropic'}
+        <!-- The connector: what runs an agent role on this model. A Claude
+             subscription only works through Claude Code; an API key works
+             through CodeDistill's own agent. -->
+        <fieldset class="connector">
+          <legend>Agent roles on this model run through</legend>
+          <label class="check">
+            <input type="radio" name="connector" value="auto" bind:group={draft.connector} />
+            <span>
+              Automatic
+              <span class="hint">Claude Code when it is installed and signed in, on your Claude subscription; otherwise CodeDistill's agent, on an API key.</span>
+            </span>
+          </label>
+          <label class="check">
+            <input type="radio" name="connector" value="claude-code" bind:group={draft.connector}
+              onchange={() => { if (discovered.length === 0) void discover(); }} />
+            <span>
+              Claude Code
+              <span class="hint">Your Claude subscription pays. No API key needed.</span>
+            </span>
+          </label>
+          <label class="check">
+            <input type="radio" name="connector" value="builtin" bind:group={draft.connector} />
+            <span>
+              CodeDistill's agent
+              <span class="hint">Billed per token to an API key. Nothing else to install.</span>
+            </span>
+          </label>
+          {#if claude}
+            <p class="hint" class:ok={claude.ready}>
+              {claude.ready ? 'Claude Code is installed and signed in on this machine.' : claude.why}
+            </p>
+          {/if}
+        </fieldset>
+        {/if}
+
 
         <div class="grid">
           <label>Name<input bind:value={draft.name} placeholder="what you'll call it" /></label>
@@ -338,13 +411,22 @@
                 under Model access in the Bedrock console.
               </span>
             </label>
+          {:else if subscriptionOnly}
+            <!-- Claude Code signs in with the customer's own account: a key
+                 here would never be used by an agent. -->
+            <p class="wide hint">
+              No API key: agents on this model run through Claude Code on your subscription.
+              Workflows that call the model directly, such as decomposing a document, need a key;
+              add a separate entry for the API if you want those too.
+            </p>
           {:else if vendor?.needs_key}
             <label class="wide">
-              API key
+              API key{#if draft.protocol === 'anthropic' && draft.connector === 'auto'} <span class="opt">optional when Claude Code is installed</span>{/if}
               <input
                 type="password"
                 bind:value={draft.api_key}
-                placeholder={editing === 'new' ? 'required' : 'leave blank to keep the stored key'}
+                placeholder={editing !== 'new' ? 'leave blank to keep the stored key'
+                  : draft.protocol === 'anthropic' && draft.connector === 'auto' ? 'used when Claude Code is not available' : 'required'}
                 autocomplete="off"
               />
               <span class="hint">Stored encrypted. Never sent back to this page.</span>
@@ -362,7 +444,10 @@
           {/if}
         </div>
 
-        {#if discovered.length > 0}
+        {#if keyFrom && discovered.length > 0}
+          <p class="hint">Listed with the API key of {keyFrom}; this entry keeps none.</p>
+        {/if}
+        {#if discovered.length > 0 && !subscriptionOnly}
           <label class="block">
             Model
             <select value={draft.model} onchange={(e) => pickModel(e.currentTarget.value)}>
@@ -377,7 +462,23 @@
         {:else}
           <label class="block">
             Model
-            <input bind:value={draft.model} placeholder="type it, or ask the vendor above" />
+            <input
+              bind:value={draft.model}
+              list={draft.protocol === 'anthropic' ? 'claude-models' : undefined}
+              placeholder={subscriptionOnly ? 'choose or type a Claude model' : 'type it, or ask the vendor above'}
+            />
+            <datalist id="claude-models">
+              {#if subscriptionOnly}
+                {#each CLAUDE_ALIASES as a (a.id)}<option value={a.id}>{a.label}</option>{/each}
+              {/if}
+              {#each discovered as m (m.id)}<option value={m.id}></option>{/each}
+            </datalist>
+            {#if subscriptionOnly}
+              <span class="hint">
+                fable, opus, sonnet and haiku always mean the newest model of that kind: a new release
+                is used as soon as Claude Code has it. Choose a full id to pin one.
+              </span>
+            {/if}
           </label>
         {/if}
 
@@ -450,6 +551,11 @@
             <div class="ident">
               <span class="name">{p.name}</span>
               <span class="tag">{p.protocol}</span>
+              {#if p.protocol === 'anthropic' && p.connector === 'claude-code'}
+                <span class="tag" title="Agent roles on this model run through Claude Code">agents: Claude Code</span>
+              {:else if p.protocol === 'anthropic' && p.connector === 'builtin'}
+                <span class="tag" title="Agent roles on this model run on CodeDistill's agent, on the API key">agents: CodeDistill</span>
+              {/if}
               {#if p.is_local}
                 <span class="tag local">on this machine</span>
               {:else}
@@ -545,4 +651,13 @@
   @media (max-width: 720px) {
       .grid { grid-template-columns: 1fr; }
   }
+  .connector {
+    border: 1px solid var(--border); border-radius: 6px; margin: 0 0 0.7rem;
+    padding: 0.5rem 0.75rem; display: flex; flex-direction: column; gap: 0.4rem;
+  }
+  .connector legend { font-size: 0.82rem; padding: 0 0.25rem; }
+  .connector .check { display: flex; align-items: flex-start; gap: 0.45rem; font-size: 0.8rem; }
+  .opt { font-size: 0.72rem; color: var(--text-dim); font-weight: normal; }
+  .connector .check > span { display: flex; flex-direction: column; }
+  .connector p.hint { margin: 0.1rem 0 0; }
 </style>

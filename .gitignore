@@ -16,6 +16,9 @@
 # BlobStore content-addressed FS sidecar to the dev DB (Slice 1+).
 # Sits next to codedistill.db as <db>.blobs/<sha-prefix>/<sha>.
 /codedistill.db.blobs/
+# Fix-scanner-findings jobs keep their checkouts, agent runs and package
+# cache beside the database (internal/conductor).
+/conductor/
 
 # Frontend build deps (regenerated via `npm install`)
 web/node_modules/

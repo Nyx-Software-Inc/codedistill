@@ -147,6 +147,14 @@
      code window; flips with the theme so the editor reads black-on-light
      or light-on-dark without per-token background painting. */
   --code-bg: #0d1117;
+  /* Diff rendering (code review). Backgrounds are translucent so Shiki's
+     token colours stay readable through them; the gutter tints are solid. */
+  --diff-add-bg: rgba(46, 160, 67, 0.18);
+  --diff-del-bg: rgba(248, 81, 73, 0.18);
+  --diff-add-gutter: #0f2e1a;
+  --diff-del-gutter: #3a1518;
+  --diff-add-fg: #7ee787;
+  --diff-del-fg: #ffa198;
 }
 
 /* Light theme: uniform lightness-flip of the dark palette (hue and
@@ -155,6 +163,12 @@
    RESOLVED theme — App.svelte resolves "system" before setting it. */
 :root[data-theme='light'] {
   --code-bg: #ffffff;
+  --diff-add-bg: rgba(46, 160, 67, 0.16);
+  --diff-del-bg: rgba(248, 81, 73, 0.16);
+  --diff-add-gutter: #dafbe1;
+  --diff-del-gutter: #ffebe9;
+  --diff-add-fg: #1a7f37;
+  --diff-del-fg: #cf222e;
   --p-050505: #fafafa;
   --p-050a05: #f5faf5;
   --p-0a0a0a: #f5f5f5;

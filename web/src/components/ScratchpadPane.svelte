@@ -17,7 +17,6 @@
   import { onMount, onDestroy } from 'svelte';
   import * as api from '../lib/api';
   import { shouldSubmit, getSubmitShortcut } from '../lib/submitShortcut';
-  import { collapseOnOverflow } from '../lib/overflowCollapse';
   import { loadRestackMode, saveRestackMode, loadAutoTidy, saveAutoTidy } from '../lib/canvasSettings';
   import { loadTypeColors, type TypeColorsConfig } from '../lib/typeColors';
   import { loadDueDateColors, type DueDateColorsConfig } from '../lib/dueDateColors';
@@ -29,6 +28,7 @@
     Scratchpad,
     CanvasFilter,
     Project,
+    DerivedStatus,
   } from '../lib/types';
   import ConfirmDialog from './ConfirmDialog.svelte';
   import FilterPanel from './FilterPanel.svelte';
@@ -43,6 +43,7 @@
   import CompositeEditor from './CompositeEditor.svelte';
   import FileAnchorModal from './FileAnchorModal.svelte';
   import Icon from './Icon.svelte';
+  import { registerCommands, unregisterCommand } from '../lib/commands.svelte';
 
   type Props = {
     items: ScratchpadItem[];
@@ -68,6 +69,12 @@
     /** Start a decompose on a document that is already here — the other half of
      *  the drop gesture: drag a spec in, then act on it where it landed. */
     onDecompose?: (item: ScratchpadItem) => void;
+    /** Items that came from a scanner finding, by id (Fix scanner findings). */
+    fixable?: Record<string, import('../lib/api').FixableItem>;
+    /** Fix one finding's item with an agent. */
+    onFixWithAgent?: (item: ScratchpadItem) => void;
+    /** Fix every open finding on the active scratchpad. */
+    onFixPad?: () => void;
     // Set of scratchpad item ids whose every derived item is done.
     // ScratchpadGrid uses this to fade + strikethrough cards whose
     // downstream work is complete. Computed in App from padTodos /
@@ -77,7 +84,7 @@
     // preferences (type colors) reload without a refresh.
     settingsTick?: number;
     // Per-card derived-item status chip (source item id -> kind+status+subject).
-    derivedStatus?: Map<string, { kind: string; status: string; subject?: string }>;
+    derivedStatus?: Map<string, DerivedStatus>;
     // Canvas pulse: source item id -> latest activity-log note summary.
     latestNoteBySource?: Map<string, string>;
     // Paid: show the 'Find duplicates' affordance only when licensed.
@@ -109,6 +116,9 @@
     onCardAnchorHover,
     onOpenSimilar,
     onDecompose,
+    fixable = {},
+    onFixWithAgent,
+    onFixPad,
     doneSourceIds,
     settingsTick = 0,
     derivedStatus,
@@ -154,12 +164,15 @@
   function openItem(item: ScratchpadItem) {
     if (item.content_type === 'sketch') { openExistingSketch(item); return; }
     if (item.content_type === 'composite') { openExistingComposite(item); return; }
-    // Classified todo/bug/use-case items open their derived detail modal —
+    // Classified todo/bug/use-case/KB items open their derived detail modal —
     // the SAME modal the Lists drawer uses — so it's one modal per type
-    // regardless of how you got here. KB / skip / unclassified have no
-    // derived detail modal, so they use the source-item editor.
+    // regardless of how you got here. Skip / unclassified have no derived
+    // record, so they use the source-item editor. KB was missing from this
+    // list after KbDetail existed: a KB card opened the capture editor, whose
+    // text is immutable once classified, so Save was refused and there was no
+    // Log to write to instead.
     const cat = item.classification_override || item.proposed_category;
-    if (onOpenDerived && item.derived_item_id && (cat === 'todo' || cat === 'bug' || cat === 'use_case')) {
+    if (onOpenDerived && item.derived_item_id && (cat === 'todo' || cat === 'bug' || cat === 'use_case' || cat === 'kb')) {
       onOpenDerived(item);
       return;
     }
@@ -913,20 +926,6 @@
   // so the 3s poll never sees half-applied positions; we fire onChange
   // afterwards to pull the new layout into the local items array.
   let restacking = $state(false);
-  let restackMenuOpen = $state(false);
-  // Toolbar label collapse, driven by the bar's own overflow (lib/overflowCollapse).
-  let padBarTight = $state(false);
-  let restackWrapEl = $state<HTMLElement | null>(null);
-  // Close the menu on any click outside its wrapper or on Escape —
-  // previously it only closed via the caret or picking an option.
-  function onWindowPointer(e: MouseEvent) {
-    if (restackMenuOpen && restackWrapEl && !restackWrapEl.contains(e.target as Node)) {
-      restackMenuOpen = false;
-    }
-  }
-  function onWindowKey(e: KeyboardEvent) {
-    if (e.key === 'Escape' && restackMenuOpen) restackMenuOpen = false;
-  }
   const RESTACK_MODES: { mode: RestackMode; label: string; hint: string }[] = [
     { mode: 'tidy', label: 'Tidy', hint: 'Keep card sizes; slide each into the lowest gap that fits' },
     { mode: 'fit', label: 'Fit to content', hint: 'Resize text cards to their content, then tidy (overwrites manual sizes on text cards)' },
@@ -934,7 +933,6 @@
     { mode: 'cols3', label: '3 columns', hint: 'Force third-width cards, then tidy' },
   ];
   async function restackActivePad(mode: RestackMode) {
-    restackMenuOpen = false;
     if (!activePad || restacking) return;
     restacking = true;
     try {
@@ -977,6 +975,62 @@
     saveAutoTidy(activePad.id, autoTidy);
     if (autoTidy) scheduleAutoTidy();
   }
+
+  // ---- Commands --------------------------------------------------------------
+  // The scratchpad's actions, in the registry (docs/design/menubar.md): the
+  // menus (File, Edit, View, Scratchpad) and the canvas row's controls render
+  // them from here, so there is no hand-built bar of buttons to keep in step.
+  const canvasOnly = () => effectiveView === 'canvas';
+  const SCRATCHPAD_COMMANDS = [
+    { id: 'scratchpad.upload', label: 'Upload file…', category: 'Scratchpad' as const, icon: 'upload',
+      description: 'Add an image or file to this scratchpad', scope: 'scratchpad' as const, run: openUploadPicker },
+    { id: 'scratchpad.export', label: 'Export scratchpad…', category: 'Scratchpad' as const, icon: 'export',
+      description: 'Download this scratchpad', scope: 'scratchpad' as const, run: exportActivePad },
+    { id: 'scratchpad.findDuplicates', label: 'Find duplicates…', category: 'Scratchpad' as const, icon: 'duplicates',
+      description: 'Find duplicate items and group them (this pad, project, or everywhere)', feature: 'dedup',
+      scope: 'scratchpad' as const, run: () => (dedupModalOpen = true) },
+    { id: 'scratchpad.archived', label: 'Archived items', category: 'Scratchpad' as const, icon: 'archived',
+      description: 'Show archived items (off the canvas, still searchable)', scope: 'scratchpad' as const,
+      run: toggleArchived, active: () => showArchived },
+    { id: 'scratchpad.showHidden', label: 'Hidden items', category: 'Scratchpad' as const,
+      description: 'Show the items hidden on this canvas, so you can unhide them', scope: 'scratchpad' as const,
+      enabled: () => hiddenCount > 0 || showHidden, badge: () => hiddenCount,
+      run: () => (showHidden = !showHidden), active: () => showHidden },
+    { id: 'scratchpad.filters', label: 'Filter cards…', category: 'Scratchpad' as const,
+      description: 'Filter the canvas by type, or show open items only', scope: 'scratchpad' as const,
+      run: () => (filterPanelOpen = !filterPanelOpen), active: () => filterActive },
+    { id: 'scratchpad.viewCanvas', label: 'Canvas', category: 'Scratchpad' as const, icon: 'canvas',
+      description: 'The spatial canvas', scope: 'scratchpad' as const,
+      run: () => (viewMode = 'canvas'), active: () => effectiveView === 'canvas' },
+    { id: 'scratchpad.viewList', label: 'List', category: 'Scratchpad' as const, icon: 'listview',
+      description: 'List view', scope: 'scratchpad' as const, feature: 'canvas_views',
+      run: () => (viewMode = 'list'), active: () => effectiveView === 'list' },
+    { id: 'scratchpad.viewCalendar', label: 'Calendar', category: 'Scratchpad' as const, icon: 'calendar',
+      description: 'Calendar view, by todo due date', scope: 'scratchpad' as const, feature: 'canvas_views',
+      run: () => (viewMode = 'calendar'), active: () => effectiveView === 'calendar' },
+    { id: 'scratchpad.viewKanban', label: 'Kanban', category: 'Scratchpad' as const, icon: 'kanban',
+      description: 'Kanban view, by status, per item type', scope: 'scratchpad' as const, feature: 'canvas_views',
+      run: () => (viewMode = 'kanban'), active: () => effectiveView === 'kanban' },
+    { id: 'scratchpad.restack', label: 'Restack', category: 'Scratchpad' as const, icon: 'restack',
+      description: 'Compact the canvas, the way you last chose', scope: 'scratchpad' as const,
+      enabled: () => canvasOnly() && !restacking, run: restackDefault },
+    ...RESTACK_MODES.map((m) => ({
+      id: `scratchpad.restack.${m.mode}`, label: `Restack: ${m.label}`, category: 'Scratchpad' as const,
+      description: m.hint, scope: 'scratchpad' as const,
+      enabled: () => canvasOnly() && !restacking, run: () => restackActivePad(m.mode),
+    })),
+    { id: 'scratchpad.autoTidy', label: 'Auto-tidy this pad', category: 'Scratchpad' as const,
+      description: 'Tidy this pad automatically when items are added, removed, hidden, or grouped. Never resizes cards.',
+      scope: 'scratchpad' as const, run: toggleAutoTidy, active: () => autoTidy },
+    { id: 'scratchpad.group', label: 'Group selected items', category: 'Scratchpad' as const,
+      description: 'Group the selected cards (Ctrl/Cmd+click adds or removes a card)', scope: 'scratchpad' as const,
+      enabled: () => selectedItemIds.size > 0, badge: () => selectedItemIds.size, run: createGroupFromSelection },
+    { id: 'scratchpad.clearSelection', label: 'Clear selection', category: 'Scratchpad' as const,
+      description: 'Deselect every card', scope: 'scratchpad' as const,
+      enabled: () => selectedItemIds.size > 0, run: clearSelection },
+  ];
+  registerCommands(SCRATCHPAD_COMMANDS);
+  onDestroy(() => { for (const c of SCRATCHPAD_COMMANDS) unregisterCommand(c.id); });
   function layoutSig(): string {
     return items
       .map((i) => `${i.id}:${i.grid_col},${i.grid_row},${i.grid_w},${i.grid_h},${i.hidden ? 1 : 0}`)
@@ -1009,7 +1063,6 @@
   });
 </script>
 
-<svelte:window onclick={onWindowPointer} onkeydown={onWindowKey} />
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
@@ -1019,160 +1072,19 @@
   ondragleave={onPaneDragLeave}
   ondrop={onPaneDrop}
 >
-  <!-- Pad CRUD lives in the header Picker. This bar holds the category
-       filter chips (single-select) plus per-pad actions (export, hidden
-       badge). Filter persists across scratchpad switches but resets on
-       page reload. -->
-  <div class="pad-bar" use:collapseOnOverflow={(t) => (padBarTight = t)} class:tight={padBarTight}>
-    <span class="restack-wrap" bind:this={restackWrapEl}>
-      <button
-        class="pad-btn"
-        onclick={restackDefault}
-        disabled={!activePad || restacking || effectiveView !== 'canvas'}
-        title={effectiveView !== 'canvas'
-          ? 'Restack is only available in Canvas view'
-          : restacking ? 'Restacking…' : 'Compact the grid (repeats your last layout choice — use ▾ to pick another)'}
-        aria-label="Restack scratchpad"
-      ><span class="btn-ico" style="--sig:#8b5cf6"><Icon name="restack" size={14} /></span><span class="btn-lbl">{restacking ? 'Restacking…' : 'Restack'}</span></button>
-      <button
-        class="pad-btn caret"
-        onclick={() => (restackMenuOpen = !restackMenuOpen)}
-        disabled={!activePad || restacking || effectiveView !== 'canvas'}
-        title={effectiveView !== 'canvas' ? 'Restack is only available in Canvas view' : 'Choose restack layout'}
-        aria-label="Choose restack layout"
-        aria-expanded={restackMenuOpen}
-      >▾</button>
-      {#if restackMenuOpen}
-        <div class="restack-menu" role="menu">
-          {#each RESTACK_MODES as m (m.mode)}
-            <button
-              role="menuitem"
-              class:current={activePad && loadRestackMode(activePad.id) === m.mode}
-              title={m.hint}
-              onclick={() => restackActivePad(m.mode)}
-            >{m.label}</button>
-          {/each}
-          <div class="menu-divider"></div>
-          <button
-            role="menuitemcheckbox"
-            aria-checked={autoTidy}
-            title="Tidy this pad automatically when items are added, removed, hidden, or grouped. Never resizes cards."
-            onclick={toggleAutoTidy}
-          >{autoTidy ? '☑' : '☐'} Auto-tidy this pad</button>
-        </div>
-      {/if}
-    </span>
-    {#if canvasViewsEnabled}
-      <span class="view-toggle" role="group" aria-label="View mode">
-        <button
-          class="view-btn"
-          class:on={effectiveView === 'canvas'}
-          onclick={() => (viewMode = 'canvas')}
-          title="Spatial canvas"
-          aria-pressed={effectiveView === 'canvas'}
-        ><span class="btn-ico" style="--sig:#06b6d4"><Icon name="canvas" size={14} /></span><span class="btn-lbl">Canvas</span></button>
-        <button
-          class="view-btn"
-          class:on={effectiveView === 'list'}
-          onclick={() => (viewMode = 'list')}
-          title="List view"
-          aria-pressed={effectiveView === 'list'}
-        ><span class="btn-ico" style="--sig:#6366f1"><Icon name="listview" size={14} /></span><span class="btn-lbl">List</span></button>
-        <button
-          class="view-btn"
-          class:on={effectiveView === 'calendar'}
-          onclick={() => (viewMode = 'calendar')}
-          title="Calendar view (by todo due date)"
-          aria-pressed={effectiveView === 'calendar'}
-        ><span class="btn-ico" style="--sig:#f59e0b"><Icon name="calendar" size={14} /></span><span class="btn-lbl">Calendar</span></button>
-        <button
-          class="view-btn"
-          class:on={effectiveView === 'kanban'}
-          onclick={() => (viewMode = 'kanban')}
-          title="Kanban view (by status, per item type)"
-          aria-pressed={effectiveView === 'kanban'}
-        ><span class="btn-ico" style="--sig:#14b8a6"><Icon name="kanban" size={14} /></span><span class="btn-lbl">Kanban</span></button>
-      </span>
-    {/if}
-    {#if dedupEnabled}
-      <button
-        class="pad-btn"
-        onclick={() => (dedupModalOpen = true)}
-        disabled={!activePad}
-        title="Find duplicate items and group them (this pad, project, or everywhere)"
-        aria-label="Find duplicates"
-      ><span class="btn-ico" style="--sig:#ec4899"><Icon name="duplicates" size={14} /></span><span class="btn-lbl">Find duplicates</span></button>
-    {/if}
-    <button
-      class="pad-btn"
-      class:on={showArchived}
-      onclick={toggleArchived}
-      disabled={!activeScratchpadId}
-      title="Show archived items (off the canvas, still searchable)"
-      aria-pressed={showArchived}
-    ><span class="btn-ico" style="--sig:#a78bfa"><Icon name="archived" size={14} /></span><span class="btn-lbl">Archived</span></button>
-    <button
-      class="pad-btn"
-      onclick={exportActivePad}
-      disabled={!activePad || exporting}
-      title={exporting ? 'Exporting…' : 'Export this scratchpad as a .zip bundle'}
-      aria-label="Export scratchpad"
-    ><span class="btn-ico" style="--sig:#3b82f6"><Icon name="export" size={14} /></span><span class="btn-lbl">Export</span></button>
-    <button
-      class="pad-btn"
-      onclick={openUploadPicker}
-      disabled={!activeScratchpadId || uploadsInFlight > 0}
-      title={uploadsInFlight > 0 ? 'Uploading…' : 'Upload an image or file (also: drag-drop onto canvas, or Cmd/Ctrl+V a clipboard image)'}
-      aria-label="Upload image or file"
-    ><span class="btn-ico" style="--sig:#22c55e"><Icon name="upload" size={14} /></span><span class="btn-lbl">{uploadsInFlight > 0 ? 'Uploading…' : 'Upload'}</span></button>
-    {#if selectedItemIds.size > 0}
-      <button
-        class="pad-btn group-cta"
-        onclick={createGroupFromSelection}
-        title="Group the selected items (Ctrl/Cmd+click to add or remove from selection)"
-        aria-label="Group selected items"
-      >§ Group ({selectedItemIds.size})</button>
-      <button
-        class="pad-btn"
-        onclick={clearSelection}
-        title="Clear selection"
-        aria-label="Clear selection"
-      >×</button>
-    {/if}
-    <input
-      bind:this={fileInput}
-      type="file"
-      multiple
-      style="display: none"
-      onchange={onUploadInputChange}
-    />
-    {#if uploadError}
-      <span class="upload-err" title={uploadError}>{uploadError}</span>
-    {/if}
-    <button
-      class="pad-btn funnel"
-      class:on={filterActive}
-      onclick={() => (filterPanelOpen = !filterPanelOpen)}
-      title={filterActive
-        ? `Filters active: ${filter !== 'all' ? filter.replace('_', ' ') : ''}${filter !== 'all' && hideDone ? ' · ' : ''}${hideDone ? 'open only' : ''} — click to change`
-        : 'Filter canvas cards'}
-      aria-label="Canvas filters"
-      aria-expanded={filterPanelOpen}
-    >⛉{#if filterActive}<span class="funnel-dot" aria-hidden="true"></span>{/if}</button>
-    {#if hiddenCount > 0}
-      <!-- A button, not a label. The count was already here for
-           discoverability; what was missing was anything to click. -->
-      <button
-        class="hidden-badge"
-        class:on={showHidden}
-        aria-pressed={showHidden}
-        title={showHidden
-          ? 'Stop showing hidden items'
-          : `Show ${hiddenCount} hidden item${hiddenCount === 1 ? '' : 's'} so you can unhide them`}
-        onclick={() => (showHidden = !showHidden)}
-      >({hiddenCount} hidden)</button>
-    {/if}
-  </div>
+  <!-- The scratchpad's actions are commands now (docs/design/menubar.md): the
+       menus carry them, and the centre's tab row shows the contextual ones.
+       What stays here is what those commands need on the page. -->
+  <input
+    bind:this={fileInput}
+    type="file"
+    multiple
+    style="display: none"
+    onchange={onUploadInputChange}
+  />
+  {#if uploadError}
+    <div class="upload-err" role="alert" title={uploadError}>{uploadError}</div>
+  {/if}
 
   <div class="editor">
     <div class="kindbar" role="radiogroup" aria-label="New item kind">
@@ -1315,6 +1227,8 @@
         onMoveItem={(item) => startMove(item)}
         onOpenSimilar={onOpenSimilar}
         {onDecompose}
+        {fixable}
+        {onFixWithAgent}
         onDismissSimilar={doDismissSimilar}
         onGroupSimilar={doGroupSimilar}
         {flashItemId}
@@ -1523,69 +1437,19 @@
     pointer-events: none;
     z-index: 100;
   }
-  .pad-bar {
-    padding: 6px 10px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    background: var(--p-101010);
-    border-bottom: 1px solid var(--p-262626);
-    flex-shrink: 0;
-  }
-  .pad-btn {
-    font-size: 11px;
-    padding: 3px 8px;
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-  }
   /* The "Open only" toggle when active — same accent treatment
      as the panel toggles in the header so the on-state reads as
      "currently filtering" rather than "primary action". */
-  .pad-btn.on {
-    background: var(--p-1a2530);
-    color: var(--p-99ccff);
-    border-color: var(--p-2d5578);
-  }
-  .pad-btn.on:hover:not(:disabled) { background: var(--p-2d5578); color: var(--p-cceeff); }
   /* UC-4 view-mode segmented control. flex:none is load-bearing: overflow:
      hidden (needed for the rounded-corner clip) zeroes a flex item's
      automatic minimum size, which made this the bar's ONLY shrinkable child —
      mid widths squeezed it (clipping Canvas/List/Calendar/Kanban) while the
      bar never actually overflowed, so the tight/icon collapse never fired. */
-  .view-toggle {
-    display: inline-flex;
-    flex: none;
-    border: 1px solid var(--p-333333);
-    border-radius: 4px;
-    overflow: hidden;
-  }
-  .view-btn {
-    font-size: 11px;
-    padding: 3px 8px;
-    border: none;
-    border-radius: 0;
-    background: var(--p-1a1a1a);
-    color: var(--p-aaaaaa);
-    cursor: pointer;
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-  }
-  .view-btn + .view-btn { border-left: 1px solid var(--p-333333); }
-  .view-btn:hover { background: var(--p-262626); color: var(--p-dddddd); }
-  .view-btn.on {
-    background: var(--p-1a2530);
-    color: var(--p-99ccff);
-  }
   /* Signature-hue icons on the canvas toolbar: colour the glyph, not the label. */
-  .pad-btn .btn-ico, .view-btn .btn-ico { display: inline-flex; align-items: center; color: var(--sig, currentColor); }
   /* Collapse toolbar labels to icons when the BAR overflows (matches the
      header). Overflow-driven, not a viewport query: this bar lives in a pane
      narrowed by the drawer + code canvas, so viewport width says nothing
      about the space it actually has (Slavko's overlapping-buttons bug). */
-  .pad-bar.tight .pad-btn .btn-lbl, .pad-bar.tight .view-btn .btn-lbl { display: none; }
-  .pad-bar.tight .pad-btn, .pad-bar.tight .view-btn { padding: 4px 7px; }
   .editor {
     padding: 10px;
     border-bottom: 1px solid var(--p-333333);
@@ -1685,12 +1549,6 @@
     overflow: auto;
     min-height: 0;
   }
-  .group-cta {
-    background: var(--p-1a2530);
-    color: var(--p-99ccff);
-    border-color: var(--p-2d5578);
-  }
-  .group-cta:hover:not(:disabled) { background: var(--p-2d5578); color: var(--p-cceeff); }
   .upload-err {
     color: var(--p-ff8888);
     font-size: 11px;
@@ -1703,29 +1561,8 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .hidden-badge {
-    /* Was a <span> with cursor: help — a hint you could not act on. Now a
-       button, so it needs the reset and a pointer. */
-    border: 1px solid transparent;
-    border-radius: 3px;
-    background: none;
-    font-family: inherit;
-    color: var(--p-888888);
-    font-size: 10px;
-    font-style: italic;
-    margin-left: auto;
-    padding: 0 4px;
-    cursor: pointer;
-  }
-  .hidden-badge:hover { color: var(--text); border-color: var(--p-3a3a3a); }
   /* Lit while revealing, so it is obvious the canvas is showing more than
      usual — otherwise a dimmed card just looks like a rendering bug. */
-  .hidden-badge.on {
-    color: var(--p-ffc56c);
-    border-color: var(--p-5a4620);
-    background: var(--p-241d0f);
-    font-style: normal;
-  }
   .move-preview {
     display: flex;
     gap: 8px;
@@ -1819,62 +1656,6 @@
     color: var(--p-ff8888);
     font-size: 12px;
     margin-top: 10px;
-  }
-  .restack-wrap {
-    position: relative;
-    display: inline-flex;
-  }
-  .restack-wrap .caret {
-    padding-left: 4px;
-    padding-right: 4px;
-    margin-left: -1px;
-  }
-  .restack-menu {
-    position: absolute;
-    top: 100%;
-    /* Anchor LEFT: since v0.10.10 removed the filter chips, Restack is
-       the bar's first element — a right-anchored menu hangs past the
-       pane's left edge and clips (Backlog regression, fixed v0.10.13). */
-    left: 0;
-    margin-top: 2px;
-    background: var(--p-161616);
-    border: 1px solid var(--p-333333);
-    border-radius: 4px;
-    display: flex;
-    flex-direction: column;
-    min-width: 150px;
-    z-index: 50;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
-  }
-  .restack-menu button {
-    background: transparent;
-    border: none;
-    color: var(--p-cccccc);
-    text-align: left;
-    font-size: 12px;
-    padding: 6px 10px;
-    cursor: pointer;
-  }
-  .restack-menu button:hover { background: var(--p-222222); color: var(--p-ffffff); }
-  .restack-menu button.current { color: var(--p-99ccff); }
-  .restack-menu .menu-divider {
-    border-top: 1px solid var(--p-2a2a2a);
-    margin: 2px 0;
-  }
-  .pad-btn.funnel {
-    position: relative;
-    padding-left: 7px;
-    padding-right: 7px;
-  }
-  .pad-btn.funnel.on { color: var(--p-99ccff); }
-  .funnel-dot {
-    position: absolute;
-    top: 3px;
-    right: 3px;
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    background: var(--p-99ccff);
   }
 
   /* Archive (item #19): delete/archive prompt + the archived strip. */

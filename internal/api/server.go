@@ -198,6 +198,10 @@ func DefaultBlobConfig() BlobConfig {
 	}
 }
 
+// AgentMCPPath is where the Conductor's agents reach CodeDistill's tools
+// (AgentMCPHandler; nil in the community edition).
+const AgentMCPPath = "/mcp/agent"
+
 func NewServer(store storage.Storage, a *agent.Agent, build BuildInfo, log *slog.Logger, export *mcpworker.Hook, suggester mcpmap.Suggester, embedder Embedder, generator Generator) *Server {
 	if log == nil {
 		log = slog.Default()
@@ -507,7 +511,26 @@ func (s *Server) Handler() http.Handler {
 	// Files (project git worktree surface — gated on Project.RepoRoot).
 	mux.HandleFunc("GET /api/v1/projects/{pid}/files", s.listFiles)
 	mux.HandleFunc("GET /api/v1/projects/{pid}/files/content", s.getFileContent)
-	mux.HandleFunc("GET /api/v1/projects/{pid}/files/commits", s.listFileCommits)
+	mux.HandleFunc("GET /api/v1/projects/{pid}/files/commits", s.listCommits)
+	mux.HandleFunc("GET /api/v1/projects/{pid}/files/branches", s.listBranches)
+	// Changesets (code review, read side — docs/design/code-review.md).
+	mux.HandleFunc("GET /api/v1/projects/{pid}/changesets/merge-base", s.getMergeBase)
+	mux.HandleFunc("GET /api/v1/projects/{pid}/changesets/diff", s.getChangesetDiff)
+	// Write side of code review (slice 4): a changeset row to hang comments
+	// off, the comments, and promotion of a comment to a bug or todo.
+	mux.HandleFunc("POST /api/v1/projects/{pid}/changesets", s.ensureChangeset)
+	mux.HandleFunc("GET /api/v1/projects/{pid}/changesets/{cid}/comments", s.listReviewComments)
+	mux.HandleFunc("POST /api/v1/projects/{pid}/changesets/{cid}/comments", s.createReviewComment)
+	mux.HandleFunc("PATCH /api/v1/projects/{pid}/changesets/{cid}/comments/{id}", s.updateReviewComment)
+	mux.HandleFunc("DELETE /api/v1/projects/{pid}/changesets/{cid}/comments/{id}", s.deleteReviewComment)
+	mux.HandleFunc("POST /api/v1/projects/{pid}/changesets/{cid}/comments/{id}/promote", s.promoteReviewComment)
+	// The review process (slice 5): request, decide, record merged/abandoned,
+	// and the live list Needs review shows.
+	mux.HandleFunc("POST /api/v1/projects/{pid}/changesets/{cid}/review", s.openReview)
+	mux.HandleFunc("GET /api/v1/projects/{pid}/changesets/{cid}/review", s.getChangesetReview)
+	mux.HandleFunc("POST /api/v1/projects/{pid}/reviews/{rid}/decide", s.decideReview)
+	mux.HandleFunc("POST /api/v1/projects/{pid}/reviews/{rid}/status", s.setReviewStatus)
+	mux.HandleFunc("GET /api/v1/projects/{pid}/reviews", s.listReviews)
 	mux.HandleFunc("GET /api/v1/projects/{pid}/files/mtime", s.getFileMtime)
 	mux.HandleFunc("GET /api/v1/projects/{pid}/code-anchors", s.listProjectCodeAnchorsByPath)
 	mux.HandleFunc("GET /api/v1/scratchpads/{id}/code-anchors", s.listScratchpadCodeAnchors)
@@ -611,6 +634,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/workflows", s.listWorkflows)
 	mux.HandleFunc("PUT /api/v1/workflows/{id}/steps/{ordinal}/provider", s.setStepProvider)
 	mux.HandleFunc("GET /api/v1/jobs/{id}", s.jobDetail)
+	mux.HandleFunc("GET /api/v1/jobs/{id}/items", s.fixJobItems)
+	mux.HandleFunc("GET /api/v1/security-knowledge", s.securityKnowledge)
+	mux.HandleFunc("GET /api/v1/agents", s.agentsStatus)
+	mux.HandleFunc("POST /api/v1/security-knowledge/refresh", s.refreshSecurityKnowledge)
+	mux.HandleFunc("GET /api/v1/projects/{id}/fixable-items", s.fixableItems)
 	mux.HandleFunc("POST /api/v1/jobs/{id}/pause", s.pauseJob)
 	mux.HandleFunc("POST /api/v1/jobs/{id}/cancel", s.cancelJob)
 	mux.HandleFunc("GET /api/v1/model-vendors", s.listVendors)

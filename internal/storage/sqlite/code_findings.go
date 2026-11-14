@@ -121,6 +121,31 @@ func (s *Store) ResolveStaleFindings(ctx context.Context, projectID, source stri
 // ListCodeFindings returns a project's actionable findings — open and not
 // resolved — ordered by severity then location. (Pushed/dismissed/resolved
 // findings have left the results page.)
+// ListPushedCodeFindings returns every finding that was pushed to a
+// scratchpad, whatever has happened to it since (still pushed, dismissed,
+// resolved by a later scan). ListCodeFindings is the open inbox and leaves
+// pushed findings out, which is right for the inbox and wrong for anything
+// asking "which items came from a scanner?".
+func (s *Store) ListPushedCodeFindings(ctx context.Context, projectID string) ([]*domain.CodeFinding, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT `+findingColumns+` FROM code_findings
+		 WHERE project_id = ? AND pushed_item_id IS NOT NULL AND pushed_item_id != ''`,
+		projectID)
+	if err != nil {
+		return nil, fmt.Errorf("list pushed findings: %w", err)
+	}
+	defer rows.Close()
+	var out []*domain.CodeFinding
+	for rows.Next() {
+		f, err := scanFinding(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) ListCodeFindings(ctx context.Context, projectID string) ([]*domain.CodeFinding, error) {
 	rows, err := s.DB.QueryContext(ctx,
 		`SELECT `+findingColumns+` FROM code_findings

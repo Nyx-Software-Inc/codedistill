@@ -48,6 +48,9 @@
   import { uiPrefs, initUiPrefs } from './lib/uiPrefs.svelte';
   import PowerBadge from './components/PowerBadge.svelte';
   import CodeCanvas, { type CodeTab } from './components/CodeCanvas.svelte';
+  import type { ChangesetPick } from './components/ChangesetPicker.svelte';
+  import ContextMenu from './components/ContextMenu.svelte';
+  import ChangesetPane from './components/ChangesetPane.svelte';
   import TodoDetail from './components/TodoDetail.svelte';
   import BugDetail from './components/BugDetail.svelte';
   import UseCaseDetail from './components/UseCaseDetail.svelte';
@@ -67,15 +70,24 @@
   import { orderProjects } from './lib/uiPrefs.svelte';
   import ProposalReview from './components/ProposalReview.svelte';
   import PaneFrame from './components/PaneFrame.svelte';
+  import MenuBar, { type Menu } from './components/MenuBar.svelte';
+  import CommandPalette from './components/CommandPalette.svelte';
   import { paneDef, SLOTS, type SlotID } from './lib/layout';
   import {
     initLayout, visibleSlots, activePane, paneSize as paneWidth,
     openPane as openPaneById, closePane as closePaneById,
     draggingPane, endDrag, movePane as movePaneTo,
-    setPaneSize as setPaneWidth, flushPaneSize, togglePane, isPaneOpen,
+    setPaneSize as setPaneWidth, flushPaneSize, togglePane, isPaneOpen, paneSlot,
   } from './lib/layoutStore.svelte';
   import CodeAnalysisPanel from './components/CodeAnalysisPanel.svelte';
   import HelpPanel from './components/HelpPanel.svelte';
+  import type { IconName } from './components/Icon.svelte';
+  import { promptDialog } from './lib/dialog';
+  import {
+    registerCommands, commandsById, runCommand, isEnabled, isVisible,
+    shortcutLabel, setCommandContext, installShortcuts, type Command,
+  } from './lib/commands.svelte';
+  import { resetLayout } from './lib/layoutStore.svelte';
   import CreditsModal from './components/CreditsModal.svelte';
   import type { CodeAnchorWithOwner, CodeAnchor } from './lib/types';
 
@@ -200,7 +212,7 @@
     const m = new Map<string, DerivedStatus>();
     for (const t of padTodos) if (t.source_item_id) m.set(t.source_item_id, { kind: 'todo', status: t.status, subject: t.subject, number: t.number, rank: rankFor('todo', t.priority) });
     for (const b of padBugs) if (b.source_item_id) m.set(b.source_item_id, { kind: 'bug', status: b.status, subject: b.subject, number: b.number, rank: rankFor('bug', b.severity) });
-    for (const k of padKb) if (k.source_item_id) m.set(k.source_item_id, { kind: 'kb', status: k.status, subject: k.title, rank: rankFor('kb', undefined) });
+    for (const k of padKb) if (k.source_item_id) m.set(k.source_item_id, { kind: 'kb', status: k.status, subject: k.title, body: k.content, rank: rankFor('kb', undefined) });
     for (const u of padUseCases) if (u.source_item_id) m.set(u.source_item_id, { kind: 'use case', status: u.status, subject: u.subject, number: u.number, rank: rankFor('use case', u.priority) });
     return m;
   });
@@ -314,9 +326,6 @@
   // Appropriate Legal Notices. CodeDistill serves its UI over HTTP, so that
   // dialog has to be reachable without knowing a secret gesture.
   let creditsOpen = $state(false);
-  function onVersionClick() {
-    creditsOpen = true;
-  }
   let errorMsg = $state<string>('');
   let hiddenCount = $derived(items.filter((i) => i.hidden).length);
 
@@ -324,6 +333,10 @@
   // still written so an older build downgraded to still finds its setting.
   let drawerWidth = $state(DRAWER_WIDTH_DEFAULT);
   let settingsOpen = $state(false);
+  let settingsSection = $state<'appearance' | 'security'>('appearance');
+  /** Security knowledge sources out of date, by name: flagged in the header
+   *  until they are fresh again. */
+  let securityStale = $state<string[]>([]);
   let adminOpen = $state(false);
   let statsOpen = $state(false);
   let systemOpen = $state(false);
@@ -425,7 +438,7 @@
     } catch (e) { errorMsg = String(e); }
   }
   // Canvas / List / Calendar: open a classified item's DERIVED detail modal
-  // (todo/bug/use-case) — the same modal the Lists drawer uses — so there's
+  // (todo/bug/use-case/KB) — the same modal the Lists drawer uses — so there's
   // one modal per type regardless of entry point.
   async function openDerivedFromItem(item: ScratchpadItem) {
     const cat = item.classification_override || item.proposed_category;
@@ -435,6 +448,7 @@
       if (cat === 'todo') openTodo = await api.getTodo(id);
       else if (cat === 'bug') openBug = await api.getBug(id);
       else if (cat === 'use_case') openUseCase = await api.getUseCase(id);
+      else if (cat === 'kb') openKb = await api.getKB(id);
     } catch (e) { errorMsg = String(e); }
   }
   // Q&A panel — symmetric with Search; reuses Search's per-kind
@@ -516,18 +530,22 @@
 
   async function refreshNeedsReviewCount() {
     try {
-      const [ib, q, pads] = await Promise.all([
+      const [ib, q, pads, rv] = await Promise.all([
         api.listInbox(),
         activeProjectId ? api.getReviewQueue(activeProjectId) : Promise.resolve(null),
         activeProjectId ? api.listScratchpads(activeProjectId) : Promise.resolve([]),
+        activeProjectId ? api.listReviews(activeProjectId, true).catch(() => ({ reviews: [] })) : Promise.resolve({ reviews: [] }),
       ]);
       // Scope the inbox count to THIS project's scratchpads — the panel filters
       // the same way, so a global count made the badge disagree with what opens
       // (Rich: IQOS badge said 3, panel was empty — those were other projects').
       const mine = new Set(pads.map((p) => p.id));
       const projectInbox = ib.filter((it) => mine.has(it.scratchpad_id)).length;
+      // Open code reviews count too: a changeset waiting for a reader is as
+      // much a call on your judgment as an escalated item.
       needsReviewCount =
-        projectInbox + (q?.items ?? []).filter((i) => i.needs_review && !i.decision).length;
+        projectInbox + (q?.items ?? []).filter((i) => i.needs_review && !i.decision).length
+        + rv.reviews.filter((v) => v.review.status !== 'approved').length;
     } catch {
       /* badge is best-effort */
     }
@@ -547,6 +565,21 @@
    *  gesture finishes where it started rather than making you find the thing
    *  you just dropped in a picker. */
   let submitPrefill = $state<Record<string, string>>({});
+  /** The workflow the start dialog opens on, when opened from a context. */
+  let submitWorkflow = $state('');
+  let submitLabels = $state<Record<string, string>>({});
+  /** Scratchpad items that came from a scanner finding, by item id: the ones
+   *  an agent can fix. */
+  let fixable = $state<Record<string, api.FixableItem>>({});
+
+  /** Open the start dialog on Fix scanner findings: for these items, or for
+   *  every finding on the scratchpad when none are given. */
+  function fixWithAgent(scratchpadId: string, itemIds: string[], labels: Record<string, string> = {}) {
+    submitWorkflow = 'fix_findings';
+    submitPrefill = { scratchpad: scratchpadId, ...(itemIds.length ? { items: itemIds.join(',') } : {}) };
+    submitLabels = Object.fromEntries(itemIds.map((id) => [id, labels[id] ?? fixable[id]?.label ?? id]));
+    submitOpen = true;
+  }
   let reviewJobId = $state<string | null>(null);
   let jobsReload = $state(0);
 
@@ -588,6 +621,288 @@
   let helpOpen = $state(false);
   function toggleHelp() { helpOpen = !helpOpen; }
   function closeHelp() { helpOpen = false; }
+
+  // ---- Commands ------------------------------------------------------------
+  // Every shell action is declared ONCE here; the header, the profile menu and
+  // the keyboard all read this registry (docs/design/commands.md). The state a
+  // command toggles still lives in this file — the closures below are how the
+  // registry reaches it without owning it. Order of registration is not order
+  // of display: each surface states its own order (HEADER_COMMANDS below).
+  const adminVisible = () => !!currentUser?.multi_user && !!currentUser?.is_admin;
+  registerCommands([
+    {
+      id: 'view.drawer', label: 'Project drawer', category: 'View',
+      description: 'Show or hide the navigation drawer (workspace, project files, scratchpad lists)',
+      icon: 'menu', shortcut: 'Mod+B',
+      run: toggleDrawer, active: () => isPaneOpen('tree'),
+    },
+    {
+      id: 'view.needsReview', label: 'Needs review', category: 'View',
+      description: 'Items waiting on your judgment — classification accepts and implementation sign-offs',
+      icon: 'check', color: '#22c55e', shortcut: 'Mod+Shift+E', scope: 'project',
+      run: () => togglePane('inbox'), active: () => isPaneOpen('inbox'), badge: () => needsReviewCount,
+    },
+    {
+      id: 'view.jobs', label: 'Jobs', category: 'View',
+      description: 'Jobs — what is running, on which model, and how far along',
+      icon: 'jobs', color: '#38bdf8', scope: 'project',
+      run: toggleJobs, active: () => isPaneOpen('jobs'), badge: () => jobsRunningCount,
+    },
+    {
+      id: 'view.changes', label: 'Changes', category: 'View',
+      description: 'Every file a branch, commit or the working copy changed, hunk by hunk — the changeset pane',
+      icon: 'diff', color: '#84cc16', scope: 'project',
+      run: () => togglePane('review'), active: () => isPaneOpen('review'),
+    },
+    {
+      id: 'view.architecture', label: 'Architecture', category: 'View',
+      description: 'Architecture diagram — LLM-drafted, you ratify',
+      icon: 'architecture', color: '#8b5cf6', scope: 'project',
+      run: toggleArchitecture, active: () => architectureOpen,
+    },
+    {
+      id: 'view.dataModel', label: 'Data model', category: 'View',
+      description: 'Data-model diagram — auto-generated from your SQL schema',
+      icon: 'datamodel', color: '#f59e0b', scope: 'project',
+      run: toggleDataModel, active: () => dataModelOpen,
+    },
+    {
+      id: 'view.analysis', label: 'Analysis', category: 'View',
+      description: 'Code analysis — static-analyzer findings you can push to a scratchpad',
+      icon: 'analysis', color: '#14b8a6', scope: 'project',
+      run: toggleAnalysis, active: () => analysisOpen,
+    },
+    {
+      id: 'view.dashboard', label: 'Dashboard', category: 'View',
+      description: 'Project metrics — throughput, open backlog',
+      icon: 'dashboard', color: '#3b82f6', scope: 'project',
+      run: toggleDashboard, active: () => dashboardOpen,
+    },
+    {
+      id: 'view.lists', label: 'Lists', category: 'View',
+      description: 'Project lists (todos / bugs / KB / use cases)',
+      icon: 'lists', color: '#06b6d4', shortcut: 'Mod+Shift+L', scope: 'project',
+      run: () => (listsOpen ? closeLists() : openLists()), active: () => listsOpen,
+    },
+    {
+      id: 'view.search', label: 'Search', category: 'View',
+      description: 'Search project items by meaning',
+      icon: 'search', color: '#6366f1', shortcut: 'Mod+Shift+F', scope: 'project',
+      run: toggleSearch, active: () => searchOpen,
+    },
+    {
+      id: 'view.ask', label: 'Ask', category: 'View',
+      description: 'Ask a question about this project (items + code)',
+      icon: 'ask', color: '#ec4899', scope: 'project',
+      run: toggleQA, active: () => qaOpen,
+    },
+    {
+      id: 'view.resetLayout', label: 'Reset pane layout', category: 'View',
+      description: 'Put every pane back where it started',
+      run: resetLayout,
+    },
+    {
+      id: 'project.new', label: 'New project…', category: 'Project',
+      description: 'Create a project and switch to it',
+      run: async () => {
+        const name = await promptDialog('Project name', { title: 'New project', placeholder: 'Name' });
+        if (name?.trim()) await pickerCreateProject(name.trim());
+      },
+    },
+    {
+      id: 'scratchpad.new', label: 'New scratchpad…', category: 'Scratchpad',
+      description: 'Create a scratchpad in the current project',
+      scope: 'project',
+      run: async () => {
+        const name = await promptDialog('Scratchpad name', { title: 'New scratchpad', placeholder: 'Name' });
+        if (name?.trim()) await pickerCreateScratchpad(name.trim());
+      },
+    },
+    {
+      id: 'account.settings', label: 'Settings', category: 'Account',
+      description: 'Models, appearance, input, indexing, workflow',
+      shortcut: 'Mod+,',
+      run: () => (settingsOpen = true), active: () => settingsOpen,
+    },
+    {
+      id: 'account.stats', label: 'Stats', category: 'Account',
+      description: 'Your activity in this workspace',
+      run: () => (statsOpen = true), active: () => statsOpen,
+    },
+    {
+      id: 'account.admin', label: 'Admin', category: 'Account',
+      description: 'Workspace roster, seats and invitations',
+      hidden: () => !adminVisible(),
+      run: () => (adminOpen = true), active: () => adminOpen,
+    },
+    {
+      id: 'help.guide', label: 'Help', category: 'Help',
+      description: 'Help — what CodeDistill is and how to use every part of it',
+      icon: 'help', color: '#22c55e', shortcut: 'F1',
+      run: toggleHelp, active: () => helpOpen,
+    },
+    {
+      id: 'help.systemInfo', label: 'About CodeDistill', category: 'Help',
+      description: 'Version, build, platform and model details',
+      hidden: () => !!currentUser?.multi_user && !currentUser?.is_admin,
+      run: () => (systemOpen = true), active: () => systemOpen,
+    },
+    {
+      id: 'help.credits', label: 'Credits & licenses', category: 'Help',
+      description: 'Who built CodeDistill and what it is built on',
+      run: () => (creditsOpen = true), active: () => creditsOpen,
+    },
+    {
+      id: 'view.palette', label: 'Command palette…', category: 'View',
+      description: 'Find any command by typing part of its name',
+      shortcut: 'Mod+K',
+      run: () => (paletteOpen = true), active: () => paletteOpen,
+    },
+    {
+      id: 'view.leftPanel', label: 'Left panel', category: 'View',
+      description: 'Show or hide whatever is docked on the left',
+      run: () => toggleSlot('left'), active: () => visibleSlots().includes('left'),
+    },
+    {
+      id: 'view.bottomPanel', label: 'Bottom panel', category: 'View',
+      description: 'Show or hide whatever is docked at the bottom',
+      run: () => toggleSlot('bottom'), active: () => visibleSlots().includes('bottom'),
+    },
+    {
+      id: 'view.rightPanel', label: 'Right panel', category: 'View',
+      description: 'Show or hide whatever is docked on the right',
+      run: () => toggleSlot('right'), active: () => visibleSlots().includes('right'),
+    },
+    {
+      id: 'agents.newJob', label: 'New job…', category: 'View',
+      description: 'Start a workflow: fix findings, decompose a document, draft the architecture',
+      scope: 'project',
+      run: () => { submitWorkflow = ''; submitPrefill = {}; submitOpen = true; },
+    },
+    {
+      id: 'agents.fixPad', label: 'Fix this scratchpad\'s findings…', category: 'View',
+      description: 'Agents fix every open scanner finding on this scratchpad, highest severity first, on a branch of their own',
+      scope: 'scratchpad', feature: 'mcp',
+      enabled: () => padFindingCount > 0, badge: () => padFindingCount,
+      run: () => fixWithAgent(activeScratchpadId, []),
+    },
+    {
+      id: 'agents.securityKnowledge', label: 'Security knowledge', category: 'View',
+      description: 'The sources the security agent checks against, and how fresh each is',
+      feature: 'mcp', badge: () => securityStale.length,
+      run: () => { settingsSection = 'security'; settingsOpen = true; },
+    },
+    {
+      id: 'help.shortcuts', label: 'Keyboard shortcuts', category: 'Help',
+      description: 'Every command and its shortcut, in the command palette',
+      run: () => (paletteOpen = true),
+    },
+    // Code review — the code pane's own commands. They also make up its
+    // right-click menu (CODE_CONTEXT_COMMANDS).
+    {
+      id: 'code.pickChangeset', label: 'Pick changeset…', category: 'View',
+      description: 'Choose a branch, commit or the working copy to review the open file against',
+      icon: 'branch', scope: 'project',
+      run: openChangesetPicker, active: () => changesetPickerOpen,
+    },
+    {
+      id: 'code.workingChanges', label: 'Show working-copy changes', category: 'View',
+      description: 'The open file as the working copy against HEAD, changes marked',
+      icon: 'diff', scope: 'project',
+      enabled: () => !!activeCodeTab && !activeCodeTab.diff,
+      run: () => { if (activeCodeTab) openDiffTab(activeCodeTab.path, { base: '', head: 'working', label: 'working copy' }); },
+    },
+    {
+      id: 'code.plainView', label: 'Show file without diff', category: 'View',
+      description: 'The open file as it is at the head of the current diff',
+      scope: 'project',
+      enabled: () => !!activeCodeTab?.diff,
+      run: () => { if (activeCodeTab?.diff) openFileInCanvas(activeCodeTab.path, activeCodeTab.revision); },
+    },
+    {
+      id: 'code.openChangeset', label: 'Show whole changeset', category: 'View',
+      description: 'Every file of this tab\'s changeset in the Changes pane',
+      icon: 'diff', scope: 'project',
+      enabled: () => !!activeCodeTab?.diff || !!activeChangeset,
+      run: () => { if (activeCodeTab?.diff) showChangeset(activeCodeTab.diff); else if (activeChangeset) openPaneById('review'); },
+    },
+    {
+      id: 'code.closeTab', label: 'Close tab', category: 'View',
+      description: 'Close the active code tab',
+      scope: 'project',
+      enabled: () => !!activeCodeTab,
+      run: () => closeCodeTab(codeActiveIndex),
+    },
+  ]);
+  // Header tools, Rich's order (2026-08-04): action first (Needs Review,
+  // badge-carrying, leftmost), then the artifact windows, then read-only
+  // surfaces, Help anchored last.
+  // Only the queues stay in the strip (docs/design/menubar.md): what waits on
+  // you, and what is running. Everything else is a menu, the palette or a
+  // shortcut away.
+  const HEADER_COMMANDS = ['view.needsReview', 'view.jobs'];
+  // The menubar states its own order; '-' is a separator. An id nothing has
+  // registered (yet) is left out, so a menu fills in as commands register.
+  const MENUS: Menu[] = [
+    { label: 'File', items: ['project.new', 'scratchpad.new', '-', 'scratchpad.upload', 'scratchpad.export', '-', 'account.settings'] },
+    { label: 'Edit', items: ['scratchpad.group', 'scratchpad.clearSelection', '-', 'scratchpad.findDuplicates', 'scratchpad.archived', 'scratchpad.showHidden'] },
+    { label: 'View', items: ['view.palette', '-', 'view.drawer', 'view.needsReview', 'view.jobs', 'view.changes', 'view.lists', 'view.search', 'view.ask',
+      '-', 'scratchpad.viewCanvas', 'scratchpad.viewList', 'scratchpad.viewCalendar', 'scratchpad.viewKanban', 'scratchpad.filters',
+      '-', 'view.leftPanel', 'view.bottomPanel', 'view.rightPanel', 'view.resetLayout'] },
+    { label: 'Project', items: ['view.analysis', 'view.architecture', 'view.dataModel', 'view.dashboard'] },
+    { label: 'Scratchpad', items: ['scratchpad.restack', 'scratchpad.restack.tidy', 'scratchpad.restack.fit', 'scratchpad.restack.cols2', 'scratchpad.restack.cols3',
+      'scratchpad.autoTidy', '-', 'scratchpad.filters', 'scratchpad.showHidden', 'scratchpad.archived', '-', 'scratchpad.export', 'scratchpad.upload'] },
+    { label: 'Agents', items: ['agents.newJob', 'agents.fixPad', '-', 'view.jobs', '-', 'agents.securityKnowledge'] },
+    { label: 'Help', items: ['help.guide', 'help.shortcuts', '-', 'help.systemInfo', 'help.credits'] },
+  ];
+  /** Which menu a command is in, for the palette. */
+  function menuOf(id: string): string {
+    return MENUS.find((m) => m.items.includes(id))?.label ?? '';
+  }
+  let paletteOpen = $state(false);
+  // The strip steps down as the window narrows (docs/design/menubar.md):
+  // labels first, then the wordmark and the menus fold into one, then the
+  // panel toggles. Measured, not a viewport breakpoint: the panes beside it
+  // are what decide how much room it has.
+  let stripW = $state(1600);
+  function measureWidth(node: HTMLElement) {
+    const ro = new ResizeObserver(([e]) => (stripW = e.contentRect.width));
+    ro.observe(node);
+    return { destroy: () => ro.disconnect() };
+  }
+  /** Open scanner findings on the active scratchpad: what Agents → Fix would work. */
+  const padFindingCount = $derived(
+    Object.values(fixable).filter((f) => f.open && f.scratchpad_id === activeScratchpadId).length,
+  );
+  // The layout toggles show or hide a whole edge. Hiding remembers what was
+  // there; showing brings it back, or a sensible default the first time.
+  const lastInSlot: Record<SlotID, string> = { left: 'tree', right: 'dock', bottom: 'review' };
+  function toggleSlot(s: SlotID) {
+    const a = activePane(s);
+    if (a) {
+      lastInSlot[s] = a;
+      closePaneById(a);
+      return;
+    }
+    const id = lastInSlot[s];
+    openPaneById(id);
+    if (paneSlot(id) !== s) movePaneTo(id, s);
+  }
+  const headerCommands = $derived(commandsById(HEADER_COMMANDS));
+  // Tooltip = description, plus the shortcut when there is one.
+  function commandTitle(cmd: Command): string {
+    const k = shortcutLabel(cmd);
+    return k ? `${cmd.description ?? cmd.label} (${k})` : (cmd.description ?? cmd.label);
+  }
+  // Enablement that is the same for every command is data the registry
+  // decides against; this keeps it current.
+  $effect(() => {
+    setCommandContext({
+      hasProject: !!activeProjectId,
+      hasScratchpad: !!activeScratchpadId,
+      licensed,
+    });
+  });
 
   function qaOpenCodeChunk(filePath: string, lineStart: number, lineEnd: number) {
     openFileInCanvas(filePath, '');
@@ -864,6 +1179,9 @@
         ? v.activeIndex
         : 0;
       codeVisible = typeof v?.visible === 'boolean' ? v.visible : tabs.length > 0;
+      // A project opens on its canvas: the canvas is the product, and its
+      // saved file tabs wait beside it (docs/design/center-tabs.md).
+      codeVisible = false;
       codeCanvasLoadFailed = false;
     } catch {
       // Load failed (not "no saved state" — that returns null, handled above).
@@ -875,8 +1193,11 @@
     }
   }
 
+  // The code opens in the centre, as tabs beside the canvas
+  // (docs/design/center-tabs.md). codeVisible says the centre is showing the
+  // code rather than the canvas; it is what ui.codecanvas.<pid> persists.
   function openFileInCanvas(path: string, revision: string = '') {
-    const idx = codeTabs.findIndex((t) => t.path === path && t.revision === revision);
+    const idx = codeTabs.findIndex((t) => t.path === path && t.revision === revision && !t.diff);
     if (idx >= 0) {
       codeActiveIndex = idx;
     } else {
@@ -887,9 +1208,69 @@
     saveCodeCanvasState();
   }
 
+  // ---- Code review: changesets in the code pane (docs/design/code-review.md) ----
+  // The last picked changeset. The single-file diff mode uses it now; the
+  // changeset pane (slice 3) will read the same value.
+  let activeChangeset = $state<ChangesetPick | null>(null);
+  let changesetPickerOpen = $state(false);
+  let codeContextMenu = $state<{ x: number; y: number } | null>(null);
+  const CODE_CONTEXT_COMMANDS = ['code.pickChangeset', 'code.workingChanges', 'code.plainView', 'code.openChangeset', 'code.closeTab'];
+  const activeCodeTab = $derived(
+    codeActiveIndex >= 0 && codeActiveIndex < codeTabs.length ? codeTabs[codeActiveIndex] : null,
+  );
+
+  /** A diff tab: the file as base..head with changes marked. One per
+   *  (path, changeset); re-picking the same one re-activates it. */
+  function openDiffTab(path: string, cs: { base: string; head: string; label: string }) {
+    const headRev = cs.head === 'working' ? '' : cs.head;
+    const idx = codeTabs.findIndex((t) => t.path === path && t.diff?.base === cs.base && t.diff?.head === cs.head);
+    if (idx >= 0) {
+      codeActiveIndex = idx;
+    } else {
+      codeTabs = [...codeTabs, { path, revision: headRev, diff: { base: cs.base, head: cs.head, label: cs.label } }];
+      codeActiveIndex = codeTabs.length - 1;
+    }
+    codeVisible = true;
+    saveCodeCanvasState();
+  }
+
+  /** The changeset pane, showing the given changeset. A diff tab carries
+   *  base/head/label; the pick's kind is read back from them. */
+  function showChangeset(d: { base: string; head: string; label: string }) {
+    const kind: ChangesetPick['kind'] = d.head === 'working' ? 'working' : d.base ? 'branch' : 'commit';
+    activeChangeset = { base: d.base, head: d.head, label: d.label, kind };
+    openPaneById('review');
+  }
+
+  function openChangesetPicker() {
+    // The picker hangs off the code's tab strip, so the code has to be showing.
+    codeVisible = true;
+    changesetPickerOpen = true;
+  }
+
+  async function onChangesetPicked(cs: ChangesetPick) {
+    changesetPickerOpen = false;
+    activeChangeset = cs;
+    if (activeCodeTab) {
+      openDiffTab(activeCodeTab.path, cs);
+      return;
+    }
+    // Nothing open: show the changeset's first changed file rather than
+    // nothing. Context 0 keeps the listing cheap; the tab fetches its own.
+    try {
+      const list = await api.changesetDiff(activeProjectId, { base: cs.base, head: cs.head, context: 0 });
+      const first = list.files.find((f) => !f.generated) ?? list.files[0];
+      if (first) openDiffTab(first.path, cs);
+      else errorMsg = `No changes in ${cs.label}`;
+    } catch (e) {
+      errorMsg = String(e);
+    }
+  }
+
   function activateCodeTab(index: number) {
     if (index < 0 || index >= codeTabs.length) return;
     codeActiveIndex = index;
+    codeVisible = true;
     saveCodeCanvasState();
   }
 
@@ -898,7 +1279,7 @@
     codeTabs = codeTabs.filter((_, i) => i !== index);
     if (codeTabs.length === 0) {
       codeActiveIndex = 0;
-      codeVisible = false;
+      codeVisible = false; // the last file closed: back to the canvas
     } else if (index < codeActiveIndex) {
       codeActiveIndex = codeActiveIndex - 1;
     } else if (index === codeActiveIndex && codeActiveIndex >= codeTabs.length) {
@@ -907,6 +1288,7 @@
     saveCodeCanvasState();
   }
 
+  /** Back to the canvas; the files stay open as tabs. */
   function hideCodeCanvas() {
     codeVisible = false;
     saveCodeCanvasState();
@@ -1126,6 +1508,10 @@
       reviewTick += 1;
       void refreshJobsCount();
       void refreshDrafting();
+      if (licensed('mcp')) {
+        api.getFixableItems(activeProjectId).then((f) => (fixable = f ?? {})).catch(() => (fixable = {}));
+        api.getSecurityKnowledge().then((k) => (securityStale = k.stale ?? [])).catch(() => {});
+      }
       errorMsg = '';
     } catch (e) {
       errorMsg = String(e);
@@ -1381,8 +1767,10 @@
     // badge exists to prevent. Fifteen seconds: a job changes state every few
     // minutes, so anything faster is wasted requests.
     const jobsBadgeTimer = setInterval(() => void refreshJobsCount(), 15000);
+    const uninstallShortcuts = installShortcuts();
 
     return () => {
+      uninstallShortcuts();
       if (timer) clearInterval(timer);
       if (debounceTimer) clearTimeout(debounceTimer);
       clearInterval(jobsBadgeTimer);
@@ -1433,20 +1821,17 @@
       <button class="dismiss" onclick={() => (licenseBannerDismissed = true)} aria-label="Dismiss license notice">×</button>
     </div>
   {/if}
-  <header use:collapseOnOverflow={(t) => (headerTight = t)} class:tight={headerTight}>
-    <button
-      class="hamburger"
-      onclick={toggleDrawer}
-      aria-label="Toggle navigation drawer"
-      aria-expanded={isPaneOpen('tree')}
-      title={isPaneOpen('tree') ? 'Hide drawer' : 'Show drawer'}
-    >
-      <span aria-hidden="true">☰</span>
-    </button>
+  <header
+    class="strip"
+    use:collapseOnOverflow={(t) => (headerTight = t)}
+    use:measureWidth
+    class:tight={headerTight || stripW < 1150}
+    class:t2={stripW < 950}
+    class:t3={stripW < 720}
+  >
     <span class="brand">
       <!-- Double-click the mark opens About. The single-click handler is the
-           matrix-theme dismissal and no-ops otherwise, so the two coexist —
-           clicks still fire first, they just do nothing. -->
+           matrix-theme dismissal and no-ops otherwise, so the two coexist. -->
       <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
       <svg
         class="logo"
@@ -1476,173 +1861,92 @@
         <path d="M32 31 L36.5 36 L32 45 L27.5 36 Z" fill="var(--p-66ccff)" />
       </svg>
       <h1>CodeDistill</h1>
-      {#if buildInfo}
-        <!-- svelte-ignore a11y_click_events_have_key_events -->
-        <span
-          class="version"
-          role="button"
-          tabindex="0"
-          title="About CodeDistill — {buildInfo.version} ({buildInfo.git_sha}, {buildInfo.build_date})"
-          onclick={onVersionClick}
-        >v{buildInfo.version}</span>
-      {/if}
     </span>
-    <span class="header-divider" aria-hidden="true">/</span>
-    <Picker
-      items={orderProjects(projects)}
-      activeId={activeProjectId}
-      label="project"
-      emptyLabel="No project"
-      onSelect={selectProject}
-      onCreate={pickerCreateProject}
-      onRename={pickerRenameProject}
-      onDelete={pickerDeleteProject}
-      canDelete={() => projects.length > 1}
-    />
-    <span class="header-divider" aria-hidden="true">/</span>
-    <Picker
-      items={scratchpads}
-      activeId={activeScratchpadId}
-      label="scratchpad"
-      emptyLabel="No scratchpad"
-      onSelect={selectScratchpad}
-      onCreate={pickerCreateScratchpad}
-      onRename={pickerRenameScratchpad}
-      onDelete={pickerDeleteScratchpad}
-      canDelete={() => scratchpads.length > 1}
-    />
-    <span class="meta">
-      <span class="stat"><b>{bannerCounts.total}</b> items</span>
-      {#if bannerCounts.inbox}<span class="stat"><b>{bannerCounts.inbox}</b> inbox</span>{/if}
-      {#if bannerCounts.todos}<span class="stat"><b>{bannerCounts.todos}</b> todos</span>{/if}
-      {#if bannerCounts.bugs}<span class="stat"><b>{bannerCounts.bugs}</b> bugs</span>{/if}
-      {#if bannerCounts.kb}<span class="stat"><b>{bannerCounts.kb}</b> kb</span>{/if}
-      {#if bannerCounts.useCases}<span class="stat"><b>{bannerCounts.useCases}</b> use-cases</span>{/if}
-      {#if bannerCounts.other}<span class="stat"><b>{bannerCounts.other}</b> other</span>{/if}
-    </span>
-    {#if errorMsg}
-      <span class="err">{errorMsg}</span>
-    {/if}
-    <!-- Header tools, Rich's order (2026-08-04): action first (Needs Review,
-         badge-carrying, leftmost), then the artifact windows, then read-only
-         surfaces, Help anchored last. -->
+    <!-- Menus, from the command registry (docs/design/menubar.md). -->
+    <MenuBar menus={MENUS} compact={stripW < 950} />
+    <div class="where">
+      <Picker
+        items={orderProjects(projects)}
+        activeId={activeProjectId}
+        label="project"
+        emptyLabel="No project"
+        onSelect={selectProject}
+        onCreate={pickerCreateProject}
+        onRename={pickerRenameProject}
+        onDelete={pickerDeleteProject}
+        canDelete={() => projects.length > 1}
+      />
+      <span class="header-divider" aria-hidden="true">/</span>
+      <Picker
+        items={scratchpads}
+        activeId={activeScratchpadId}
+        label="scratchpad"
+        emptyLabel="No scratchpad"
+        onSelect={selectScratchpad}
+        onCreate={pickerCreateScratchpad}
+        onRename={pickerRenameScratchpad}
+        onDelete={pickerDeleteScratchpad}
+        canDelete={() => scratchpads.length > 1}
+      />
+      <button class="palette-btn" onclick={() => runCommand('view.palette')} title="Command palette — find any command ({shortcutLabel(commandsById(['view.palette'])[0])})">
+        <Icon name="search" size={12} /><span>{shortcutLabel(commandsById(['view.palette'])[0])}</span>
+      </button>
+    </div>
     <div class="header-actions">
-      <button
-        class="lists-btn"
-        class:on={isPaneOpen('inbox')}
-        onclick={() => togglePane('inbox')}
-        title="Items waiting on your judgment — classification accepts and implementation sign-offs"
-        aria-label="Toggle needs-review panel"
-        aria-pressed={isPaneOpen('inbox')}
-      >
-        <span class="btn-ico" style="--sig:#22c55e"><Icon name="check" size={15} /></span><span class="btn-lbl">Needs review</span>
-        {#if needsReviewCount > 0}<span class="badge">{needsReviewCount}</span>{/if}
-      </button>
-      <button
-        class="lists-btn"
-        class:on={isPaneOpen('jobs')}
-        onclick={toggleJobs}
-        title="Jobs — what is running, on which model, and how far along"
-        aria-label="Toggle job monitor"
-        aria-pressed={isPaneOpen('jobs')}
-      >
-        <span class="btn-ico" style="--sig:#38bdf8"><Icon name="jobs" size={15} /></span><span class="btn-lbl">Jobs</span>
-        {#if jobsRunningCount > 0}<span class="badge">{jobsRunningCount}</span>{/if}
-      </button>
-      <button
-        class="lists-btn"
-        class:on={architectureOpen}
-        onclick={toggleArchitecture}
-        title="Architecture diagram — LLM-drafted, you ratify"
-        aria-label="Toggle architecture diagram"
-        aria-pressed={architectureOpen}
-      >
-        <span class="btn-ico" style="--sig:#8b5cf6"><Icon name="architecture" size={15} /></span><span class="btn-lbl">Architecture</span>
-      </button>
-      <button
-        class="lists-btn"
-        class:on={dataModelOpen}
-        onclick={toggleDataModel}
-        title="Data-model diagram — auto-generated from your SQL schema"
-        aria-label="Toggle data-model diagram"
-        aria-pressed={dataModelOpen}
-      >
-        <span class="btn-ico" style="--sig:#f59e0b"><Icon name="datamodel" size={15} /></span><span class="btn-lbl">Data model</span>
-      </button>
-      <button
-        class="lists-btn"
-        class:on={analysisOpen}
-        onclick={toggleAnalysis}
-        title="Code analysis — static-analyzer findings you can push to a scratchpad"
-        aria-label="Toggle code analysis panel"
-        aria-pressed={analysisOpen}
-      >
-        <span class="btn-ico" style="--sig:#14b8a6"><Icon name="analysis" size={15} /></span><span class="btn-lbl">Analysis</span>
-      </button>
-      <button
-        class="lists-btn"
-        class:on={dashboardOpen}
-        onclick={toggleDashboard}
-        title="Project metrics — throughput, open backlog"
-        aria-label="Toggle dashboard panel"
-        aria-pressed={dashboardOpen}
-      >
-        <span class="btn-ico" style="--sig:#3b82f6"><Icon name="dashboard" size={15} /></span><span class="btn-lbl">Dashboard</span>
-      </button>
-      <button
-        class="lists-btn"
-        class:on={listsOpen}
-        onclick={() => (listsOpen ? closeLists() : openLists())}
-        title="Project lists (todos / bugs / KB / use cases)"
-        aria-label="Toggle lists panel"
-        aria-pressed={listsOpen}
-      >
-        <span class="btn-ico" style="--sig:#06b6d4"><Icon name="lists" size={15} /></span><span class="btn-lbl">Lists</span>
-      </button>
-      <button
-        class="lists-btn"
-        class:on={searchOpen}
-        onclick={toggleSearch}
-        title="Search project items by meaning"
-        aria-label="Toggle search panel"
-        aria-pressed={searchOpen}
-      >
-        <span class="btn-ico" style="--sig:#6366f1"><Icon name="search" size={15} /></span><span class="btn-lbl">Search</span>
-      </button>
-      <button
-        class="lists-btn"
-        class:on={qaOpen}
-        onclick={toggleQA}
-        title="Ask a question about this project (items + code)"
-        aria-label="Toggle Q&A panel"
-        aria-pressed={qaOpen}
-      >
-        <span class="btn-ico" style="--sig:#ec4899"><Icon name="ask" size={15} /></span><span class="btn-lbl">Ask</span>
-      </button>
-      <button
-        class="lists-btn"
-        class:on={helpOpen}
-        onclick={toggleHelp}
-        title="Help — what CodeDistill is and how to use every part of it"
-        aria-label="Toggle help"
-        aria-pressed={helpOpen}
-      >
-        <span class="btn-ico" style="--sig:#22c55e"><Icon name="help" size={15} /></span><span class="btn-lbl">Help</span>
-      </button>
-      <PowerBadge onClick={() => (settingsOpen = true)} />
+      {#each headerCommands as cmd (cmd.id)}
+        {#if isVisible(cmd)}
+          <button
+            class="lists-btn"
+            class:on={cmd.active?.() ?? false}
+            onclick={() => runCommand(cmd.id)}
+            disabled={!isEnabled(cmd)}
+            title={commandTitle(cmd)}
+            aria-label={cmd.label}
+            aria-pressed={cmd.active?.() ?? false}
+          >
+            {#if cmd.icon}
+              <span class="btn-ico" style="--sig:{cmd.color ?? 'currentColor'}"><Icon name={cmd.icon as IconName} size={15} /></span>
+            {/if}
+            <span class="btn-lbl">{cmd.label}</span>
+            {#if (cmd.badge?.() ?? 0) > 0}<span class="badge">{cmd.badge!()}</span>{/if}
+          </button>
+        {/if}
+      {/each}
+      <span class="layout-toggles" role="group" aria-label="Panels">
+        {#each [['left', 'view.leftPanel'], ['bottom', 'view.bottomPanel'], ['right', 'view.rightPanel']] as [edge, id] (id)}
+          {@const cmd = commandsById([id])[0]}
+          {#if cmd}
+            <button
+              class="layout-toggle"
+              class:on={cmd.active?.() ?? false}
+              onclick={() => runCommand(id)}
+              title={`${cmd.label}: ${cmd.description}`}
+              aria-label={cmd.label}
+              aria-pressed={cmd.active?.() ?? false}
+            >
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.2" />
+                {#if edge === 'left'}<rect x="1.5" y="2.5" width="4.5" height="11" fill="currentColor" opacity={cmd.active?.() ? 0.9 : 0.3} />{/if}
+                {#if edge === 'right'}<rect x="10" y="2.5" width="4.5" height="11" fill="currentColor" opacity={cmd.active?.() ? 0.9 : 0.3} />{/if}
+                {#if edge === 'bottom'}<rect x="1.5" y="9.5" width="13" height="4" fill="currentColor" opacity={cmd.active?.() ? 0.9 : 0.3} />{/if}
+              </svg>
+            </button>
+          {/if}
+        {/each}
+      </span>
       <ProfileMenu
         me={currentUser}
         {license}
-        onOpenSettings={() => (settingsOpen = true)}
-        onOpenAdmin={() => (adminOpen = true)}
-        onOpenStats={() => (statsOpen = true)}
-        onOpenSystem={() => (systemOpen = true)}
         onUpdated={() => api.getMe().then((m) => (currentUser = m)).catch(() => {})}
       />
     </div>
   </header>
+  <CommandPalette open={paletteOpen} onClose={() => (paletteOpen = false)} {menuOf} />
 
   <StatsModal open={statsOpen} onClose={() => (statsOpen = false)} />
+  {#if codeContextMenu}
+    <ContextMenu x={codeContextMenu.x} y={codeContextMenu.y} ids={CODE_CONTEXT_COMMANDS} onClose={() => (codeContextMenu = null)} />
+  {/if}
   <SystemInfoModal open={systemOpen} onClose={() => (systemOpen = false)} />
   {#if setupStatus}
     <SetupScreen status={setupStatus} onDone={() => { setupStatus = null; void refresh(); }} />
@@ -1651,11 +1955,11 @@
   <Modal
     open={settingsOpen}
     title="Settings"
-    onClose={() => { settingsOpen = false; settingsTick += 1; }}
+    onClose={() => { settingsOpen = false; settingsTick += 1; settingsSection = 'appearance'; }}
     width="900px"
   >
     {#snippet children()}
-      <Settings userId={LOCAL_USER} />
+      <Settings userId={LOCAL_USER} initial={settingsSection} />
     {/snippet}
   </Modal>
 
@@ -1679,6 +1983,31 @@
 
 <!-- One snippet for every pane, so PaneFrame never learns what a pane
      contains and each component keeps the props it always had. -->
+{#snippet canvasControls()}
+  <!-- Contextual controls for the canvas, rendered from the scratchpad's own
+       commands (docs/design/menubar.md): the view switch always, the rest
+       only when there is something to act on. -->
+  {#each ['scratchpad.viewCanvas', 'scratchpad.viewList', 'scratchpad.viewCalendar', 'scratchpad.viewKanban'] as id (id)}
+    {@const c = commandsById([id])[0]}
+    {#if c && isVisible(c) && isEnabled(c)}
+      <button class="cc-btn" class:on={c.active?.() ?? false} onclick={() => runCommand(id)} title={commandTitle(c)} aria-label={c.label} aria-pressed={c.active?.() ?? false}>
+        {#if c.icon}<Icon name={c.icon as IconName} size={13} />{/if}
+      </button>
+    {/if}
+  {/each}
+  <span class="cc-sep" aria-hidden="true"></span>
+  {#each ['scratchpad.filters', 'scratchpad.showHidden', 'scratchpad.group', 'agents.fixPad'] as id (id)}
+    {@const c = commandsById([id])[0]}
+    {@const n = c?.badge?.() ?? 0}
+    {@const on = c?.active?.() ?? false}
+    {#if c && isVisible(c) && isEnabled(c) && (id === 'scratchpad.filters' || n > 0 || on)}
+      <button class="cc-btn text" class:on onclick={() => runCommand(id)} title={commandTitle(c)} aria-pressed={on}>
+        {#if id === 'scratchpad.filters'}⛉ Filter{:else if id === 'scratchpad.showHidden'}{n} hidden{:else if id === 'scratchpad.group'}§ Group {n}{:else}Fix {padFindingCount} finding{padFindingCount === 1 ? '' : 's'}{/if}
+      </button>
+    {/if}
+  {/each}
+{/snippet}
+
 {#snippet paneContent(id: string)}
   {#if id === 'tree'}
     <Drawer
@@ -1686,20 +2015,15 @@
       onProjectImported={projectCreated}
       onOpenFile={openFileInCanvas}
     />
-  {:else if id === 'code'}
-    <CodeCanvas
+  {:else if id === 'review'}
+    <ChangesetPane
       projectId={activeProjectId}
-      tabs={codeTabs}
-      activeIndex={codeActiveIndex}
-      onActivate={activateCodeTab}
-      onClose={closeCodeTab}
-      onHide={hideCodeCanvas}
-      onAnchorClick={handleAnchorClick}
-      onCreateItem={createItemFromCodeSelection}
-      hasActiveScratchpad={!!activeScratchpadId}
-      {pendingHighlight}
-      onHighlightConsumed={() => (pendingHighlight = null)}
-      externalHover={hoveredCardAnchor}
+      changeset={activeChangeset}
+      onPick={(cs) => (activeChangeset = cs)}
+      onOpenFile={(p) => { if (activeChangeset) openDiffTab(p, activeChangeset); }}
+      onOpenItem={(t, id) => void openDockedFull(t, id)}
+      tick={reviewTick}
+      onReviewChanged={() => { void refreshNeedsReviewCount(); scheduleRefresh(); }}
     />
   {:else if id === 'dock'}
     <DockedItems onOpenFile={openFileInCanvas} onOpenFull={openDockedFull} />
@@ -1711,6 +2035,7 @@
       onOpenItem={(ownerType: string, ownerId: string) =>
         void openDockedFull(ownerType as DockedItem['ownerType'], ownerId)}
       onChanged={() => { void refreshNeedsReviewCount(); scheduleRefresh(); }}
+      onOpenChangeset={(cs) => { activeChangeset = cs; openPaneById('review'); }}
     />
   {:else if id === 'jobs'}
     <JobMonitor
@@ -1718,6 +2043,9 @@
       onNewJob={() => (submitOpen = true)}
       onReview={(rid) => (reviewJobId = rid)}
       reloadKey={jobsReload}
+      onOpenItem={(ot, oid) => {
+        if (ot === 'todo_item' || ot === 'bug_item' || ot === 'use_case_item') void openDockedFull(ot, oid);
+      }}
     />
   {/if}
 {/snippet}
@@ -1757,7 +2085,38 @@
           ></div>
         {/if}
 
-        <section class="scratchpad">
+        <div class="center">
+          {#if activeProjectId}
+            <!-- The centre's tabs: the canvas first, then every open file
+                 (docs/design/center-tabs.md). The row is always there: its
+                 right side carries the canvas's own controls
+                 (docs/design/menubar.md). -->
+          <CodeCanvas
+            projectId={activeProjectId}
+            tabs={codeTabs}
+            activeIndex={codeActiveIndex}
+            onActivate={activateCodeTab}
+            onClose={closeCodeTab}
+            onHide={hideCodeCanvas}
+            canvasTab={{ label: activePad?.name ?? 'Canvas', active: !codeVisible || codeTabs.length === 0, onSelect: hideCodeCanvas }}
+      trailing={(!codeVisible || codeTabs.length === 0) ? canvasControls : undefined}
+            onAnchorClick={handleAnchorClick}
+            onCreateItem={createItemFromCodeSelection}
+            hasActiveScratchpad={!!activeScratchpadId}
+            {pendingHighlight}
+            onHighlightConsumed={() => (pendingHighlight = null)}
+            externalHover={hoveredCardAnchor}
+            pickerOpen={changesetPickerOpen}
+            onPickerOpen={openChangesetPicker}
+            onPickerClose={() => (changesetPickerOpen = false)}
+            onPicked={onChangesetPicked}
+            onContextMenu={(e) => (codeContextMenu = { x: e.clientX, y: e.clientY })}
+            onOpenDiffFile={(p, d) => openDiffTab(p, d)}
+            onOpenChangeset={showChangeset}
+            onOpenItem={(t, id) => void openDockedFull(t, id)}
+          />
+          {/if}
+        <section class="scratchpad" class:hidden={codeVisible && codeTabs.length > 0}>
       <ScratchpadPane
         {items}
         {scratchpads}
@@ -1784,8 +2143,12 @@
           submitPrefill = { source_item: item.id };
           submitOpen = true;
         }}
+        {fixable}
+        onFixWithAgent={(item) => fixWithAgent(item.scratchpad_id, [item.id])}
+        onFixPad={() => fixWithAgent(activeScratchpadId, [])}
       />
         </section>
+        </div>
 
         {#if visibleSlots().includes('right')}
           <div
@@ -1818,6 +2181,42 @@
         </div>
       {/if}
     </div>
+
+    <!-- Status, not actions (docs/design/menubar.md): what the header used to
+         carry beside its buttons. -->
+    <footer class="statusbar">
+      <span class="meta">
+        <span class="stat"><b>{bannerCounts.total}</b> items</span>
+        {#if bannerCounts.inbox}<span class="stat"><b>{bannerCounts.inbox}</b> inbox</span>{/if}
+        {#if bannerCounts.todos}<span class="stat"><b>{bannerCounts.todos}</b> todos</span>{/if}
+        {#if bannerCounts.bugs}<span class="stat"><b>{bannerCounts.bugs}</b> bugs</span>{/if}
+        {#if bannerCounts.kb}<span class="stat"><b>{bannerCounts.kb}</b> kb</span>{/if}
+        {#if bannerCounts.useCases}<span class="stat"><b>{bannerCounts.useCases}</b> use-cases</span>{/if}
+        {#if bannerCounts.other}<span class="stat"><b>{bannerCounts.other}</b> other</span>{/if}
+      </span>
+      {#if errorMsg}<span class="err" title={errorMsg}>{errorMsg}</span>{/if}
+      <span class="sb-spacer"></span>
+      {#if jobsRunningCount > 0}
+        <button class="sb-item" onclick={() => runCommand('view.jobs')} title="Open the job monitor">
+          ⏳ {jobsRunningCount} job{jobsRunningCount === 1 ? '' : 's'} running
+        </button>
+      {/if}
+      {#if securityStale.length}
+        <button
+          class="sb-item warn"
+          onclick={() => runCommand('agents.securityKnowledge')}
+          title={`Security knowledge out of date: ${securityStale.join(', ')}. The security agent still rules, and says its data is old.`}
+        >⚠ Security knowledge out of date</button>
+      {/if}
+      <PowerBadge onClick={() => (settingsOpen = true)} />
+      {#if buildInfo}
+        <button
+          class="sb-item version"
+          onclick={() => runCommand('help.credits')}
+          title="About CodeDistill — {buildInfo.version} ({buildInfo.git_sha}, {buildInfo.build_date})"
+        >v{buildInfo.version}</button>
+      {/if}
+    </footer>
 
   <!-- Detail modals — owned by App so the code canvas can open them too. -->
   <TodoDetail
@@ -1899,9 +2298,10 @@
   <JobSubmit
     projectId={activeProjectId}
     open={submitOpen}
-    initialWorkflow={Object.keys(submitPrefill).length ? 'decompose' : undefined}
+    initialWorkflow={submitWorkflow || (Object.keys(submitPrefill).length ? 'decompose' : undefined)}
     prefill={submitPrefill}
-    onClose={() => { submitOpen = false; submitPrefill = {}; }}
+    prefillLabels={submitLabels}
+    onClose={() => { submitOpen = false; submitPrefill = {}; submitWorkflow = ''; submitLabels = {}; }}
     onSubmitted={() => {
       // Open the panel on submit: the run has to be visible somewhere, and
       // starting one only to have nothing change is how a button looks broken.
@@ -1941,6 +2341,7 @@
     scratchpadName={activePad?.name ?? ''}
     onClose={closeAnalysis}
     onPushed={scheduleRefresh}
+    onFixWithAgent={licensed('mcp') ? (itemId, padId, label) => { closeAnalysis(); fixWithAgent(padId, [itemId], { [itemId]: label }); } : undefined}
   />
 
   <HelpPanel open={helpOpen} onClose={closeHelp} {license} />
@@ -2009,43 +2410,69 @@
     display: flex;
     flex-direction: column;
   }
-  header {
+  /* One low strip (docs/design/menubar.md): brand, menus, where you are,
+     the two queues, the panel toggles, you. */
+  header.strip {
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 10px 16px;
+    gap: 10px;
+    height: 34px;
+    padding: 0 8px 0 10px;
     background: var(--p-0d0d0d);
-    border-bottom: 1px solid var(--p-333333);
+    border-bottom: 1px solid var(--p-262626);
     flex-shrink: 0;
   }
-  .hamburger {
-    background: transparent;
-    border: 1px solid var(--p-333333);
-    color: var(--p-aaaaaa);
-    font-size: 18px;
-    line-height: 1;
-    padding: 6px 11px;
-    cursor: pointer;
-    border-radius: 3px;
+  .where {
+    flex: 1 1 auto; min-width: 0;
+    display: flex; align-items: center; justify-content: center; gap: 6px;
   }
-  .hamburger:hover { color: var(--p-ffffff); background: var(--p-1a1a1a); }
-  .hamburger[aria-expanded="true"] {
-    background: var(--p-1e3a52);
-    color: var(--p-99ccff);
-    border-color: var(--p-2d5578);
+  .palette-btn {
+    display: inline-flex; align-items: center; gap: 4px; margin-left: 6px;
+    background: var(--p-161616); border: 1px solid var(--p-2a2a2a); border-radius: 4px;
+    color: var(--text-dim); font: inherit; font-size: 0.72rem; padding: 2px 8px; cursor: pointer;
   }
+  .palette-btn:hover { color: var(--text); border-color: var(--p-3a3a3a); }
+  header.tight .palette-btn span { display: none; }
+  header.t2 h1 { display: none; }
+  header.t3 .layout-toggles { display: none; }
+  .where > :global(*) { min-width: 0; }
+  .header-actions { flex-shrink: 0; }
+  .brand, .palette-btn { flex-shrink: 0; }
+  .layout-toggles { display: inline-flex; gap: 1px; margin: 0 4px; }
+  .layout-toggle {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 24px; height: 22px; background: none; border: 0; border-radius: 4px;
+    color: var(--text-dim); cursor: pointer; padding: 0;
+  }
+  .layout-toggle svg { width: 15px; height: 15px; }
+  .layout-toggle:hover, .layout-toggle.on { color: var(--text); background: var(--p-1f1f1f); }
+  .statusbar {
+    display: flex; align-items: center; gap: 12px; height: 22px; padding: 0 10px;
+    background: var(--p-0d0d0d); border-top: 1px solid var(--p-262626);
+    font-size: 11px; color: var(--p-888888); flex-shrink: 0; overflow: hidden; white-space: nowrap;
+  }
+  .statusbar .err { overflow: hidden; text-overflow: ellipsis; }
+  .sb-spacer { flex: 1; }
+  .sb-item {
+    background: none; border: 0; color: inherit; font: inherit; cursor: pointer;
+    padding: 0 4px; border-radius: 3px; height: 18px;
+  }
+  .sb-item:hover { color: var(--text); background: var(--p-1f1f1f); }
+  .sb-item.warn { color: var(--warn, #e0a030); }
+  .sb-item.version { color: var(--p-555555); font-variant-numeric: tabular-nums; }
   .brand {
     display: inline-flex;
     align-items: center;
-    gap: 10px;
+    gap: 7px;
+    flex-shrink: 0;
   }
-  .logo { width: 24px; height: 24px; flex-shrink: 0; }
+  .logo { width: 18px; height: 18px; flex-shrink: 0; }
   /* Only the matrix easter-egg activates this hint — outside of that
      the logo is a plain decoration with no interactivity. */
   .logo.dismissable { cursor: pointer; }
   .logo.dismissable:hover { opacity: 0.7; }
   h1 {
-    font-size: 14px;
+    font-size: 12.5px;
     margin: 0;
     font-weight: 600;
     letter-spacing: 1px;
@@ -2082,11 +2509,6 @@
      to icons (words become tooltips). See the headerTight observer. */
   header.tight .lists-btn .btn-lbl { display: none; }
   header.tight .lists-btn { padding: 5px 8px; }
-  /* Below ~900px: the stats drop to their own row so the banner stays clean. */
-  @media (max-width: 900px) {
-    header { flex-wrap: wrap; }
-    .meta { order: 10; flex-basis: 100%; padding-top: 4px; }
-  }
   .header-actions {
     margin-left: auto;
     display: inline-flex;
@@ -2107,6 +2529,8 @@
     gap: 5px;
   }
   .lists-btn:hover { color: var(--p-ffffff); background: var(--p-1a1a1a); }
+  .lists-btn:disabled { opacity: 0.45; cursor: default; }
+  .lists-btn:disabled:hover { color: var(--p-aaaaaa); background: transparent; }
   .lists-btn.on,
   .lists-btn[aria-pressed="true"] {
     background: var(--p-1e3a52);
@@ -2211,4 +2635,20 @@
     min-height: 0;
     overflow: hidden;
   }
+  .stale-chip { color: var(--warn, #e0a030); border-color: var(--warn, #e0a030); }
+  /* The centre: the file tabs (when any are open) above the canvas or the
+     code. The canvas stays mounted while a file is showing. */
+  .center { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .center > :global(.canvas) { flex: 1 1 auto; min-height: 0; }
+  .center > :global(.canvas.strip-only) { flex: 0 0 auto; }
+  .center > .scratchpad { flex: 1 1 auto; min-height: 0; }
+  .scratchpad.hidden { display: none; }
+  .cc-btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+    height: 22px; min-width: 24px; padding: 0 5px; background: none; border: 0; border-radius: 4px;
+    color: var(--text-dim); font: inherit; font-size: 11px; cursor: pointer;
+  }
+  .cc-btn:hover { color: var(--text); background: var(--p-1f1f1f); }
+  .cc-btn.on { color: var(--accent); background: var(--p-1f1f1f); }
+  .cc-sep { width: 1px; height: 14px; background: var(--p-2a2a2a); margin: 0 4px; }
 </style>

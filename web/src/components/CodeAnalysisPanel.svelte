@@ -31,8 +31,11 @@
     scratchpadName?: string;
     onClose: () => void;
     onPushed?: () => void;
+    /** Fix one finding with an agent: it is pushed to the open scratchpad
+     *  first, because the workflow works on items. */
+    onFixWithAgent?: (itemId: string, scratchpadId: string, label: string) => void;
   };
-  let { open, projectId, projectName = '', scratchpadId, scratchpadName = '', onClose, onPushed }: Props = $props();
+  let { open, projectId, projectName = '', scratchpadId, scratchpadName = '', onClose, onPushed, onFixWithAgent }: Props = $props();
 
   let findings = $state<CodeFinding[]>([]);
   let scan = $state<AnalysisScan | null>(null);
@@ -191,6 +194,24 @@
     }
   }
 
+  async function fixOne(id: string) {
+    if (!scratchpadId || !onFixWithAgent) return;
+    const f = findings.find((x) => x.id === id);
+    const label = f ? `${f.analyzer} ${f.rule_id} · ${f.file_path}` : id;
+    busy = true;
+    err = '';
+    try {
+      const r = await api.pushCodeFinding(id, scratchpadId);
+      findings = findings.filter((f) => f.id !== id);
+      onPushed?.();
+      onFixWithAgent(r.item_id, scratchpadId, label);
+    } catch (e) {
+      err = e instanceof Error ? e.message : 'Push failed';
+    } finally {
+      busy = false;
+    }
+  }
+
   async function dismiss(id: string) {
     busy = true;
     err = '';
@@ -295,7 +316,19 @@
               </div>
               {#if f.detail}<pre class="detail">{f.detail}</pre>{/if}
             </div>
+            <span class="row-acts">
+            {#if onFixWithAgent}
+              <button
+                class="fix"
+                onclick={() => fixOne(f.id)}
+                disabled={busy || !scratchpadId}
+                title={scratchpadId
+                  ? `Fix with agent — pushed to “${scratchpadName}”, then an agent fixes it on a branch of its own and CodeDistill checks the fix`
+                  : 'Open a scratchpad to fix into'}
+              >Fix</button>
+            {/if}
             <button class="dismiss" onclick={() => dismiss(f.id)} disabled={busy} title="Dismiss (won't return on re-scan)">✕</button>
+            </span>
           </div>
         {/each}
       </div>
@@ -357,5 +390,11 @@
     background: transparent; border: 1px solid var(--p-333333); color: var(--p-888888);
     width: 24px; height: 24px; border-radius: 4px; cursor: pointer; font-size: 12px;
   }
+  .row-acts { display: flex; align-items: flex-start; gap: 0.3rem; }
+  .fix {
+    background: transparent; border: 1px solid var(--p-333333); color: var(--accent);
+    height: 24px; padding: 0 0.5rem; border-radius: 4px; cursor: pointer; font-size: 12px;
+  }
+  .fix:disabled { opacity: 0.5; cursor: default; }
   .dismiss:hover { color: var(--p-e07a7a); border-color: var(--p-5a3030); }
 </style>

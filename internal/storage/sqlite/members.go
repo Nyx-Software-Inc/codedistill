@@ -19,6 +19,7 @@ import (
 
 	"codedistill/internal/domain"
 	"codedistill/internal/storage"
+	"codedistill/internal/storage/dbx"
 )
 
 // Workspace members.
@@ -48,18 +49,41 @@ func (s *Store) TryAddWorkspaceMember(ctx context.Context, m *domain.WorkspaceMe
 	if status == "" {
 		status = domain.MemberActive
 	}
-	res, err := s.DB.ExecContext(ctx, `
+	return s.underSeatLock(ctx, m.WorkspaceID, `
 		INSERT INTO workspace_members (workspace_id, user_id, role, status, created_at)
 		SELECT ?, ?, ?, ?, ?
 		 WHERE (SELECT COUNT(*) FROM workspace_members
 		          WHERE workspace_id = ? AND status = ? AND user_id != 'local') < ?`,
 		m.WorkspaceID, m.UserID, m.Role, status, m.CreatedAt,
 		m.WorkspaceID, domain.MemberActive, seats)
+}
+
+// underSeatLock runs a seat-guarded write so that concurrent ones cannot all
+// pass the guard. On SQLite one writer at a time already holds. On Postgres,
+// READ COMMITTED lets every concurrent statement count the members as they
+// were before any of them committed, so all of them see a free seat: measured,
+// 8 members added under a 2-seat license. A per-workspace advisory lock, held
+// until the transaction ends, makes them take turns.
+func (s *Store) underSeatLock(ctx context.Context, workspaceID, query string, args ...any) (bool, error) {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	if s.DB.Dialect() == dbx.Postgres {
+		if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext(?))`, "workspace_seats:"+workspaceID); err != nil {
+			return false, err
+		}
+	}
+	res, err := tx.ExecContext(ctx, query, args...)
 	if err != nil {
 		return false, err
 	}
 	n, err := res.RowsAffected()
-	return n > 0, err
+	if err != nil {
+		return false, err
+	}
+	return n > 0, tx.Commit()
 }
 
 // TryActivateWorkspaceMember flips a non-active member to active only if a seat
@@ -67,18 +91,13 @@ func (s *Store) TryAddWorkspaceMember(ctx context.Context, m *domain.WorkspaceMe
 // activated; false means the member was already active OR seats are full — the
 // caller re-reads to tell those apart. Caller must pass seats > 0.
 func (s *Store) TryActivateWorkspaceMember(ctx context.Context, workspaceID, userID string, seats int) (bool, error) {
-	res, err := s.DB.ExecContext(ctx, `
+	return s.underSeatLock(ctx, workspaceID, `
 		UPDATE workspace_members SET status = ?
 		 WHERE workspace_id = ? AND user_id = ? AND status != ?
 		   AND (SELECT COUNT(*) FROM workspace_members
 		          WHERE workspace_id = ? AND status = ? AND user_id != 'local') < ?`,
 		domain.MemberActive, workspaceID, userID, domain.MemberActive,
 		workspaceID, domain.MemberActive, seats)
-	if err != nil {
-		return false, err
-	}
-	n, err := res.RowsAffected()
-	return n > 0, err
 }
 
 // GetWorkspaceMember returns one member's role + status.

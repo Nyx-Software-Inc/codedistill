@@ -28,8 +28,11 @@
     initialWorkflow?: string;
     /** Answers supplied by whatever opened the dialog, by param key. */
     prefill?: Record<string, string>;
+    /** How to name prefilled item ids ("gosec G401 · app.go"), for a field
+     *  that takes several items: an id is not something a person can check. */
+    prefillLabels?: Record<string, string>;
   };
-  let { projectId, open, onClose, onSubmitted, initialWorkflow, prefill }: Props = $props();
+  let { projectId, open, onClose, onSubmitted, initialWorkflow, prefill, prefillLabels }: Props = $props();
 
   let workflows = $state<Workflow[]>([]);
   let scratchpads = $state<Pad[]>([]);
@@ -58,9 +61,23 @@
       ]);
       workflows = (wfs ?? []).filter((w) => w.enabled);
       scratchpads = sps ?? [];
-      if (!chosen) chosen = initialWorkflow ?? workflows[0]?.id ?? '';
+      // Opened from a context (a finding, a scratchpad): that workflow, even if
+      // a different one was chosen the last time the dialog was open.
+      if (initialWorkflow) chosen = initialWorkflow;
+      else if (!chosen) chosen = workflows[0]?.id ?? '';
       await loadDocuments();
-      for (const [k, v] of Object.entries(prefill ?? {})) values[k] = v;
+      // Every opening starts from the workflow's defaults plus what this
+      // opening supplied. Keeping the last opening's answers carried one
+      // finding's item into a "fix the whole scratchpad" run.
+      const w = workflows.find((x) => x.id === chosen);
+      if (w) {
+        const next: Record<string, string> = {};
+        for (const p of w.params ?? []) next[p.key] = prefill?.[p.key] ?? p.default ?? '';
+        values = next;
+        lastLoaded = w.id;
+      } else {
+        for (const [k, v] of Object.entries(prefill ?? {})) values[k] = v;
+      }
     })();
   });
 
@@ -230,7 +247,22 @@
           <span class="lbl">
             {p.label}{#if !p.required}<span class="opt">optional</span>{/if}
           </span>
-          {#if kind === 'scratchpad_item'}
+          {#if kind === 'scratchpad_item' && p.multiple}
+            <!-- Several items: the ones the dialog was opened for, or none,
+                 which means the whole scratchpad. Choosing from scratch is
+                 done where the items are, not from a list of ids here. -->
+            {@const ids = (values[p.key] ?? '').split(',').filter(Boolean)}
+            {#if ids.length}
+              <ul class="picked">
+                {#each ids as itemId (itemId)}<li>{prefillLabels?.[itemId] ?? itemId}</li>{/each}
+              </ul>
+              <button type="button" class="linkish" disabled={busy} onclick={() => (values[p.key] = '')}>
+                Work the whole scratchpad instead
+              </button>
+            {:else}
+              <p class="help">The whole scratchpad.</p>
+            {/if}
+          {:else if kind === 'scratchpad_item'}
             <div class="docpick">
               <select bind:value={values[p.key]} disabled={busy || uploading}>
                 <option value="">— choose a document —</option>
@@ -328,4 +360,9 @@
   .started { margin: 0 0 0.4rem; font-size: 0.9rem; }
   .detail { margin: 0.2rem 0; font-size: 0.82rem; color: var(--text-dim); }
   .warn { color: var(--warn, #e0a030); }
+  .picked { margin: 0.1rem 0 0.2rem; padding-left: 1.1rem; font-family: ui-monospace, monospace; font-size: 0.8rem; }
+  .linkish { align-self: flex-start; text-align: left; background: none; border: 0; padding: 0;
+             color: var(--accent); font: inherit; font-size: 0.8rem; cursor: pointer; }
+  .linkish { text-decoration: underline; text-underline-offset: 2px; }
+  .linkish:disabled { opacity: 0.5; cursor: default; }
 </style>

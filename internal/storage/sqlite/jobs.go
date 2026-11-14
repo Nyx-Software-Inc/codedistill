@@ -25,7 +25,7 @@ import (
 
 const jobColumns = `id, project_id, type, scope_kind, scope_id, scope_label,
 	status, phase, done, total, model, tokens_in, tokens_out, error,
-	created_by, started_at, updated_at, finished_at`
+	created_by, started_at, updated_at, finished_at, branch, base_sha`
 
 // CreateJob records the start of a run.
 func (s *Store) CreateJob(ctx context.Context, j *domain.Job) error {
@@ -38,11 +38,12 @@ func (s *Store) CreateJob(ctx context.Context, j *domain.Job) error {
 	}
 	_, err := s.DB.ExecContext(ctx,
 		`INSERT INTO jobs (`+jobColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		j.ID, j.ProjectID, j.Type, nullable(j.ScopeKind), nullable(j.ScopeID),
 		nullable(j.ScopeLabel), j.Status, nullable(j.Phase), j.Done, j.Total,
 		nullable(j.Model), j.TokensIn, j.TokensOut, nullable(j.Error),
-		nullable(j.CreatedBy), j.StartedAt, j.UpdatedAt, finished)
+		nullable(j.CreatedBy), j.StartedAt, j.UpdatedAt, finished,
+		nullable(j.Branch), nullable(j.BaseSHA))
 	if err != nil {
 		return fmt.Errorf("create job: %w", err)
 	}
@@ -204,14 +205,15 @@ type rowScanner interface{ Scan(dest ...any) error }
 
 func scanJob(r rowScanner) (*domain.Job, error) {
 	j := &domain.Job{}
-	var scopeKind, scopeID, scopeLabel, phase, model, errMsg, createdBy sql.NullString
+	var scopeKind, scopeID, scopeLabel, phase, model, errMsg, createdBy, branch, baseSHA sql.NullString
 	var finished sql.NullTime
 	err := r.Scan(&j.ID, &j.ProjectID, &j.Type, &scopeKind, &scopeID, &scopeLabel,
 		&j.Status, &phase, &j.Done, &j.Total, &model, &j.TokensIn, &j.TokensOut,
-		&errMsg, &createdBy, &j.StartedAt, &j.UpdatedAt, &finished)
+		&errMsg, &createdBy, &j.StartedAt, &j.UpdatedAt, &finished, &branch, &baseSHA)
 	if err != nil {
 		return nil, err
 	}
+	j.Branch, j.BaseSHA = branch.String, baseSHA.String
 	j.ScopeKind, j.ScopeID, j.ScopeLabel = scopeKind.String, scopeID.String, scopeLabel.String
 	j.Phase, j.Model, j.Error, j.CreatedBy = phase.String, model.String, errMsg.String, createdBy.String
 	if finished.Valid {

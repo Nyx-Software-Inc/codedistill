@@ -57,13 +57,18 @@ export interface PaneDef {
  *  first run. */
 export const PANES: readonly PaneDef[] = [
   { id: 'tree', title: 'Project', slot: 'left', min: 180, size: 241 },
-  { id: 'code', title: 'Code', slot: 'left', min: 280, size: 410 },
+  // The code is not a pane: it opens in the centre, as tabs beside the
+  // canvas (docs/design/center-tabs.md). A saved layout naming 'code' drops it.
   { id: 'dock', title: 'Items', slot: 'right', min: 220, size: 280 },
   { id: 'jobs', title: 'Jobs', slot: 'right', min: 300, size: 420 },
   // The pane this whole design exists for: a classification queue rendered as a
   // modal is a queue nobody sees. Wider minimum than the others because its
   // sign-off rows carry a risk band, a subject, flags and two buttons.
   { id: 'inbox', title: 'Needs review', slot: 'right', min: 320, size: 460 },
+  // The changeset pane (docs/design/code-review.md §2): every file a changeset
+  // touched, hunks under hard headers. Cross-file reading wants width, so it
+  // is the widest default; the bottom slot suits it even better.
+  { id: 'review', title: 'Changes', slot: 'right', min: 480, size: 720 },
 ];
 
 export function paneDef(id: string): PaneDef | undefined {

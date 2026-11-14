@@ -292,6 +292,9 @@
   .picker {
     position: relative;
     display: inline-flex;
+    /* May shrink: in a narrow header the name truncates rather than being
+       covered by what is beside it. */
+    min-width: 0;
   }
   .trigger {
     background: transparent;
@@ -305,7 +308,10 @@
     align-items: center;
     gap: 6px;
     max-width: 240px;
+    min-width: 0;
   }
+  .trigger .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .trigger .caret { flex-shrink: 0; }
   .trigger:hover { background: var(--p-1a1a1a); border-color: var(--p-444444); }
   .trigger[aria-expanded="true"] {
     background: var(--p-1e3a52);
