@@ -80,3 +80,28 @@ func paidAuth(w http.ResponseWriter) {
 func paidMU(w http.ResponseWriter) {
 	writeMsg(w, http.StatusForbidden, "multi-user is a paid feature")
 }
+
+// No proxy sign-in in the community edition.
+func (s *Server) behindProxy() bool      { return false }
+func (s *Server) proxyLogoutURL() string { return "" }
+
+// Proxy sign-in is multi-user too: not in the community edition.
+const (
+	ProxyAWSALB           = "aws-alb"
+	ProxyGoogleIAP        = "google-iap"
+	ProxyCloudflareAccess = "cloudflare-access"
+)
+
+// ProxyConfig mirrors the paid edition's, so main.go compiles.
+type ProxyConfig struct {
+	Kind, Audience, Team, ALBARN, Region, LogoutURL string
+}
+
+type proxyAuth struct{}
+
+// NewProxyAuth always fails in the CE — multi-user is a paid feature.
+func NewProxyAuth(_ context.Context, _ ProxyConfig) (*proxyAuth, error) {
+	return nil, errors.New("signing in through a proxy is part of CodeDistill's multi-user editions")
+}
+
+func (s *Server) WithProxyAuth(_ *proxyAuth) *Server { return s }

@@ -69,6 +69,17 @@
       <a class="primary" href={me.login_url ?? '/api/v1/auth/login'}>Sign in</a>
     </div>
   </div>
+{:else if me.needs === 'refused' || me.needs === 'proxy'}
+  <!-- A proxy signs people in: either it vouched for someone this server
+       will not let in (deactivated, no seat, not allowed), or this request
+       did not come through it. Nothing to fill in here. -->
+  <div class="gate">
+    <div class="card">
+      <h1>CodeDistill</h1>
+      <p>{me.message ?? 'You cannot use this server.'}</p>
+      {#if me.needs === 'refused' && me.logout_url}<a class="primary" href={me.logout_url}>Sign out</a>{/if}
+    </div>
+  </div>
 {:else if me.needs === 'token'}
   <div class="gate">
     <form class="card" onsubmit={sendToken}>

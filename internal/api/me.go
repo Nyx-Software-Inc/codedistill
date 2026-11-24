@@ -34,6 +34,13 @@ type meResponse struct {
 	// token, once). Empty: in.
 	Needs    string `json:"needs,omitempty"`
 	LoginURL string `json:"login_url,omitempty"`
+	// Message: why the app cannot go on ("refused": a proxy vouched for them
+	// but they may not use this server; "proxy": the request did not come
+	// through the proxy that signs people in).
+	Message string `json:"message,omitempty"`
+	// LogoutURL: where Sign out goes when a proxy, not CodeDistill, holds the
+	// session.
+	LogoutURL string `json:"logout_url,omitempty"`
 	// What the caller may do, and the roles that give it.
 	Permissions []string `json:"permissions"`
 	Roles       []string `json:"roles"`
@@ -47,6 +54,14 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	uid := s.currentUser(r)
 	resp := meResponse{ID: uid, DisplayName: uid, MultiUser: s.auth != nil, Permissions: []string{}, Roles: []string{}}
 	switch {
+	case s.auth != nil && !isAuthenticated(r.Context()) && !s.validToken(r) && denial(r.Context()) != "":
+		resp.Needs, resp.Message = "refused", denial(r.Context())
+		writeJSON(w, http.StatusOK, resp)
+		return
+	case s.behindProxy() && !isAuthenticated(r.Context()) && !s.validToken(r):
+		resp.Needs, resp.Message = "proxy", "This server signs people in through its proxy. Open it through the proxy's address."
+		writeJSON(w, http.StatusOK, resp)
+		return
 	case s.auth != nil && !isAuthenticated(r.Context()) && !s.validToken(r):
 		resp.Needs, resp.LoginURL = "sign_in", "/api/v1/auth/login"
 		writeJSON(w, http.StatusOK, resp)
@@ -57,6 +72,7 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp.Permissions = s.permsFor(r).List()
+	resp.LogoutURL = s.proxyLogoutURL()
 	if u, err := s.store.GetUser(r.Context(), uid); err == nil {
 		if u.DisplayName != "" {
 			resp.DisplayName = u.DisplayName

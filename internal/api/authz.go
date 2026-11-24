@@ -140,6 +140,16 @@ func ruleFor(pattern string) routeRule {
 
 type permsKey struct{}
 
+type denialKey struct{}
+
+// denial is why a caller who presented an identity is still not let in (a
+// proxy vouched for them, but they are deactivated, or out of seats): the gate
+// says it instead of "sign in first".
+func denial(ctx context.Context) string {
+	s, _ := ctx.Value(denialKey{}).(string)
+	return s
+}
+
 // callerPerms is what the request's caller may do, worked out once per
 // request.
 func (s *Server) callerPerms(r *http.Request) domain.PermSet {
@@ -197,7 +207,14 @@ func (s *Server) authorize(mux *http.ServeMux) http.Handler {
 			return
 		}
 		if !isAuthenticated(r.Context()) && !s.validToken(r) {
-			writeMsg(w, http.StatusUnauthorized, "sign in first")
+			switch {
+			case denial(r.Context()) != "":
+				writeMsg(w, http.StatusForbidden, denial(r.Context()))
+			case s.behindProxy():
+				writeMsg(w, http.StatusUnauthorized, "this server signs people in through its proxy: open it through the proxy's address")
+			default:
+				writeMsg(w, http.StatusUnauthorized, "sign in first")
+			}
 			return
 		}
 		perms := s.permsFor(r)

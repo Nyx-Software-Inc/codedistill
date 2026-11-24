@@ -129,8 +129,12 @@ export interface Me {
   multi_user: boolean;
   /** What must happen before anything else: "sign_in" (login_url starts it)
    *  or "token" (the server's access token, once). Absent: in. */
-  needs?: 'sign_in' | 'token';
+  needs?: 'sign_in' | 'token' | 'refused' | 'proxy';
   login_url?: string;
+  /** Why the app cannot go on, for "refused" and "proxy". */
+  message?: string;
+  /** Where Sign out goes when a proxy holds the session. */
+  logout_url?: string;
   /** What this person may do (docs/design/workflows-and-roles.md). */
   permissions: string[];
   roles: string[];

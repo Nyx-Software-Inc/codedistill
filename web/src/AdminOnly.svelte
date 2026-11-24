@@ -20,7 +20,9 @@
 
   async function signOut() {
     try { await api.logout(); } catch { /* signed out either way */ }
-    location.reload();
+    // Behind a signing proxy, the proxy holds the session: sign out there.
+    if (me.logout_url) location.href = me.logout_url;
+    else location.reload();
   }
 </script>
 

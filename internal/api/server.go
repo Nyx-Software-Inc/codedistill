@@ -123,6 +123,11 @@ type Server struct {
 	queueStop context.CancelFunc
 	queueDone chan struct{}
 
+	// proxyCache remembers proxy tokens already verified, until they expire
+	// (at most a minute), so a busy page does not re-verify per request.
+	proxyMu    sync.Mutex
+	proxyCache map[string]proxyCacheEntry
+
 	// routes is the router, kept so a test can check that every rule in
 	// authz.go names a real route.
 	routes *http.ServeMux
@@ -226,6 +231,11 @@ func NewServer(store storage.Storage, a *agent.Agent, build BuildInfo, log *slog
 		log = slog.Default()
 	}
 	return &Server{store: store, agent: a, build: build, log: log, export: export, suggester: suggester, embedder: embedder, generator: generator}
+}
+
+type proxyCacheEntry struct {
+	uid   string
+	until time.Time
 }
 
 // SignInConfigured reports whether people sign in to this server (multi-user).

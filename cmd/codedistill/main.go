@@ -232,6 +232,13 @@ examples:
 		if err := cmdServe(dbArg, *model, *endpoint, *modelAPI, *addr, *appWindow, *ollamaAutostart, *ollamaBin, *licensePath, *noAuth, *secureCookiesFlag || os.Getenv("CODEDISTILL_SECURE_COOKIES") == "1"); err != nil {
 			die("serve failed: %v", err)
 		}
+	case "auth":
+		if flag.Arg(1) != "check" {
+			die("usage: codedistill auth check [-db <path>]  — check this server's sign-in before anyone signs in")
+		}
+		if err := cmdAuthCheck(flag.Args()[2:]); err != nil {
+			die("%v", err)
+		}
 	case "mcp":
 		if err := cmdMCP(dbArg, *licensePath); err != nil {
 			die("mcp failed: %v", err)
@@ -918,32 +925,23 @@ func cmdServe(dbPath, model, endpoint, modelAPI, addr, appWindow string, ollamaA
 	if grouper != nil {
 		apiSrv = apiSrv.WithDuplicateGrouper(grouper)
 	}
-	// OIDC login (multi-user). Configured via env; with no issuer set the server
-	// stays single-user (currentUser = 'local'). A misconfig/unreachable IdP is
-	// logged and auth is disabled rather than failing serve.
-	if issuer := os.Getenv("CODEDISTILL_OIDC_ISSUER"); issuer != "" {
-		clientID := os.Getenv("CODEDISTILL_OIDC_CLIENT_ID")
-		redirect := os.Getenv("CODEDISTILL_OIDC_REDIRECT_URL")
-		if clientID == "" || redirect == "" {
-			logger.Error("OIDC misconfigured: CODEDISTILL_OIDC_ISSUER set but CLIENT_ID/REDIRECT_URL missing — auth disabled")
-		} else if auth, err := api.NewOIDCAuth(ctx, issuer, clientID, os.Getenv("CODEDISTILL_OIDC_CLIENT_SECRET"), redirect); err != nil {
-			logger.Error("OIDC provider init failed — auth disabled (server stays single-user)", "issuer", issuer, "err", err)
-		} else {
-			apiSrv = apiSrv.WithAuth(auth).WithTrustedEmail(os.Getenv("CODEDISTILL_OIDC_TRUST_EMAIL") == "1")
-			// The first owner: named by the operator, never guessed. The
-			// license's email is whoever bought it, not necessarily whoever
-			// should run the server.
-			adminEmail := os.Getenv("CODEDISTILL_ADMIN_EMAIL")
-			if adminEmail == "" {
-				logger.Warn("sign-in is on but CODEDISTILL_ADMIN_EMAIL is not set: nobody can become the first owner until it is")
-			}
-			var domains []string
-			if d := os.Getenv("CODEDISTILL_ALLOWED_DOMAINS"); d != "" {
-				domains = strings.Split(d, ",")
-			}
-			apiSrv = apiSrv.WithMembershipPolicy(adminEmail, domains)
-			logger.Info("OIDC login enabled", "issuer", issuer, "bootstrap_admin", adminEmail != "", "allowlist", len(domains) > 0)
+	// How people sign in to a multi-user server (signin.go): an identity
+	// provider, or a signing proxy in front of the server. Neither: the server
+	// stays single-user. Either, misconfigured or unreachable: the server does
+	// not start, rather than run single-user while nobody can sign in.
+	signIn, err := readSignIn()
+	if err != nil {
+		return fmt.Errorf("sign-in: %w (run `codedistill auth check`)", err)
+	}
+	if apiSrv, err = applySignIn(ctx, apiSrv, signIn); err != nil {
+		return fmt.Errorf("%w (run `codedistill auth check`)", err)
+	}
+	if signIn.mode != "" {
+		if signIn.adminEmail == "" {
+			logger.Warn("sign-in is on but CODEDISTILL_ADMIN_EMAIL is not set: nobody can become the first owner until it is")
 		}
+		logger.Info("multi-user sign-in", "through", map[string]string{"oidc": signIn.issuer, "proxy": signIn.proxy.Kind}[signIn.mode],
+			"first_owner", signIn.adminEmail != "", "allowlist", len(signIn.domains) > 0)
 	}
 	// Write-auth: gate state-changing API requests behind a token (reads
 	// stay open). A localhost-bound desktop install is protected from the

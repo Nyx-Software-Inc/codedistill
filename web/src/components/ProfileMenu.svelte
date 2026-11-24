@@ -121,7 +121,9 @@
     } catch {
       /* ignore */
     }
-    window.location.reload();
+    // Behind a signing proxy, the proxy holds the session: sign out there.
+    if (me?.logout_url) window.location.href = me.logout_url;
+    else window.location.reload();
   }
 </script>
 
