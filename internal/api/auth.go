@@ -76,11 +76,40 @@ func (s *Server) getAuthToken(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
 		return
 	}
-	if !s.validToken(r) {
+	// On a multi-user server the route already needs "administer the
+	// installation" (authz.go). On the desktop reads are open, so the token is
+	// shown only to a caller that already holds it.
+	if s.auth == nil && !s.validToken(r) {
 		writeMsg(w, http.StatusUnauthorized, "authenticate to view the API token")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"enabled": true, "token": s.TokenValue()})
+}
+
+// tokenSession (POST /api/v1/auth/token-session) is how a browser reaching a
+// server without sign-in from another machine gets in: it presents the
+// server's API token once, and gets the first-party cookie that carries it.
+// The cookie is handed out unasked only to a server listening on this machine
+// alone; anywhere else, loading the page must not be enough.
+func (s *Server) tokenSession(w http.ResponseWriter, r *http.Request) {
+	if s.auth != nil {
+		writeMsg(w, http.StatusBadRequest, "this server uses sign-in: sign in instead")
+		return
+	}
+	var req struct {
+		Token string `json:"token"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	want := s.TokenValue()
+	if want == "" || subtle.ConstantTimeCompare([]byte(strings.TrimSpace(req.Token)), []byte(want)) != 1 {
+		writeMsg(w, http.StatusUnauthorized, "that is not this server's access token")
+		return
+	}
+	SetAuthCookie(w, want, s.cookieSecure(r))
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // regenerateAuthToken rotates the token: persists the new one, swaps it in
@@ -104,7 +133,11 @@ func (s *Server) regenerateAuthToken(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.setToken(tok)
-	SetAuthCookie(w, tok, s.cookieSecure(r))
+	// The desktop's app carries the token in its cookie; a multi-user server's
+	// people sign in and never hold it.
+	if s.auth == nil {
+		SetAuthCookie(w, tok, s.cookieSecure(r))
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"token": tok})
 }
 

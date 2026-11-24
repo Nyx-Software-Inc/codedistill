@@ -82,9 +82,22 @@
         <header>
           <span class="name">{w.name}</span>
           {#if w.builtin}<span class="tag">built in</span>{/if}
-          {#if !w.resumable}<span class="tag warn">cannot be resumed</span>{/if}
         </header>
         {#if w.description}<p class="desc">{w.description}</p>{/if}
+        <!-- What the workflow declares about its jobs: the queue reads these,
+             never the workflow's name (docs/design/workflows-and-roles.md). -->
+        <p class="settings">
+          <span class="tag" class:warn={!w.resumable}
+                title={w.resumable ? 'Its jobs can pause and carry on where they stopped: they can be paused to make room for an Immediate job, resumed, and survive a restart.' : 'Its jobs cannot carry on where they stopped: once started they run to the end, and are never paused to make room.'}>
+            {w.resumable ? 'can pause and resume' : 'runs to the end'}
+          </span>
+          <span class="tag" title="The highest priority its jobs may be given.">
+            up to {w.max_priority === 'immediate' ? 'Immediate' : 'High'}
+          </span>
+          {#if w.fixed_priority}
+            <span class="tag" title="Its jobs keep the priority they were given: nobody raises it, and waiting does not either.">fixed priority</span>
+          {/if}
+        </p>
 
         {#each w.steps as st (st.ordinal)}
           <div class="step">
@@ -140,6 +153,8 @@
     border-radius: 3px; padding: 0 0.3rem;
   }
   .tag.warn { color: var(--warn, #e0a030); border-color: var(--warn, #e0a030); }
+  .settings { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0.1rem 0 0.5rem; }
+  .settings .tag { cursor: help; }
   .desc { margin: 0.3rem 0 0.6rem; font-size: 0.82rem; color: var(--text-dim); max-width: 46rem; }
   .step {
     display: flex; gap: 1rem; align-items: flex-start;

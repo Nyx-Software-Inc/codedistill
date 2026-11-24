@@ -20,15 +20,19 @@ import (
 	"net/http"
 	"time"
 
+	"codedistill/internal/jobqueue"
 	"codedistill/internal/modelprobe"
 )
 
 // Fixing findings runs outside coding agents through the Conductor, which is
 // part of CodeDistill Pro. The workflow row exists in every edition, so say so
 // rather than leaving the start button to fail obscurely.
-func (s *Server) submitFixFindings(w http.ResponseWriter, _ *http.Request, _ string, _ map[string]string) {
+func (s *Server) submitFixFindings(w http.ResponseWriter, _ *http.Request, _ string, _ map[string]string, _ string) {
 	writeMsg(w, http.StatusPaymentRequired, "fixing findings with an agent is part of CodeDistill Pro")
 }
+
+// registerFixRunner: no Conductor, so no fix jobs to run.
+func (s *Server) registerFixRunner(*jobqueue.Scheduler) {}
 
 // AgentMCPHandler: no Conductor, so no agents to serve.
 func (s *Server) AgentMCPHandler() http.Handler { return nil }

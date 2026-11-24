@@ -31,10 +31,23 @@ type Workflow struct {
 	// does nothing is worse than offering none.
 	Builtin bool `json:"builtin"`
 
-	// Resumable means a stopped run continues where it left off rather than
-	// starting over. Declared, not inferred, because the UI must not offer a
-	// Resume button that quietly restarts from zero.
+	// Resumable: can pause and resume. Its jobs stop at a checkpoint and later
+	// carry on, as the same job, where they stopped (the contract in
+	// docs/design/workflows-and-roles.md). The queue pauses only these to make
+	// room for an Immediate job, offers Resume only on these, and puts only
+	// these back in line after a restart. Declared, not inferred, because the
+	// UI must not offer a Resume button that quietly restarts from zero.
 	Resumable bool `json:"resumable"`
+
+	// MaxPriority is the highest priority its jobs may have: high, or
+	// immediate, which pauses other work to make room and so must be allowed
+	// on purpose.
+	MaxPriority string `json:"max_priority"`
+
+	// FixedPriority: its jobs keep the priority they were submitted with.
+	// Nobody raises it, and waiting does not either. For background work that
+	// must never push ahead of what people asked for.
+	FixedPriority bool `json:"fixed_priority"`
 
 	Enabled bool           `json:"enabled"`
 	Steps   []WorkflowStep `json:"steps"`
@@ -166,3 +179,12 @@ type ParamError struct {
 }
 
 func (e *ParamError) Error() string { return e.Msg }
+
+// AllowsPriority reports whether this workflow's jobs may have priority p.
+func (w *Workflow) AllowsPriority(p string) bool {
+	max := w.MaxPriority
+	if max == "" {
+		max = PriorityHigh
+	}
+	return JobPriorityRank(p) <= JobPriorityRank(max)
+}

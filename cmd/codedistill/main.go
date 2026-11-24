@@ -590,6 +590,13 @@ func cmdServe(dbPath, model, endpoint, modelAPI, addr, appWindow string, ollamaA
 	// start a new one — otherwise a killed architecture draft holds its project
 	// forever and the panel never lets you draft again. Never fatal: failing to
 	// tidy up must not stop the server from serving.
+	// Jobs that carry on where they stopped go back in line instead: they
+	// resume once the queue starts (docs/design/job-queue.md).
+	if n, err := store.RequeueRunningJobs(ctx, api.ResumableJobTypes(ctx, store), time.Now().UTC()); err != nil {
+		slog.Warn("could not put resumable jobs back in line", "err", err)
+	} else if n > 0 {
+		slog.Info("jobs stopped by the restart are back in line to resume", "count", n)
+	}
 	if n, err := store.InterruptStaleJobs(ctx, time.Now().UTC()); err != nil {
 		slog.Warn("could not clear interrupted jobs", "err", err)
 	} else if n > 0 {
@@ -922,11 +929,13 @@ func cmdServe(dbPath, model, endpoint, modelAPI, addr, appWindow string, ollamaA
 		} else if auth, err := api.NewOIDCAuth(ctx, issuer, clientID, os.Getenv("CODEDISTILL_OIDC_CLIENT_SECRET"), redirect); err != nil {
 			logger.Error("OIDC provider init failed — auth disabled (server stays single-user)", "issuer", issuer, "err", err)
 		} else {
-			apiSrv = apiSrv.WithAuth(auth)
-			// Bootstrap admin: explicit env, else the license holder's email.
+			apiSrv = apiSrv.WithAuth(auth).WithTrustedEmail(os.Getenv("CODEDISTILL_OIDC_TRUST_EMAIL") == "1")
+			// The first owner: named by the operator, never guessed. The
+			// license's email is whoever bought it, not necessarily whoever
+			// should run the server.
 			adminEmail := os.Getenv("CODEDISTILL_ADMIN_EMAIL")
-			if adminEmail == "" && lic != nil && lic.License != nil {
-				adminEmail = lic.License.Email
+			if adminEmail == "" {
+				logger.Warn("sign-in is on but CODEDISTILL_ADMIN_EMAIL is not set: nobody can become the first owner until it is")
 			}
 			var domains []string
 			if d := os.Getenv("CODEDISTILL_ALLOWED_DOMAINS"); d != "" {
@@ -959,9 +968,11 @@ func cmdServe(dbPath, model, endpoint, modelAPI, addr, appWindow string, ollamaA
 			// main's dispatch still exits 1 via die().
 			return fmt.Errorf("refusing to serve on a non-localhost address (%s) without write-auth — bind 127.0.0.1, or drop -no-auth", addr)
 		}
-		logger.Warn("serving on a non-localhost address: reads are UNAUTHENTICATED — front it with TLS + a reverse proxy", "addr", addr)
+		logger.Warn("serving on a non-localhost address: front it with TLS + a reverse proxy", "addr", addr)
 	}
-	apiSrv = apiSrv.WithAuthToken(apiToken, persistAPIToken)
+	// Beyond this machine, without sign-in, reads need the token as writes
+	// do: open reads would show every project to anyone who reaches the port.
+	apiSrv = apiSrv.WithAuthToken(apiToken, persistAPIToken).WithReadAuth(!isLocalBind(addr))
 	root.Handle("/api/v1/", apiSrv.Handler())
 	// MCP transport: mounted on EVERY install — "MCP read free" is the
 	// funnel hook, so any agent can pull intent. Write tools are registered
@@ -972,8 +983,10 @@ func cmdServe(dbPath, model, endpoint, modelAPI, addr, appWindow string, ollamaA
 	// apiSrv.TokenValue (the METHOD, not its result) so /mcp resolves the token
 	// per request — a captured copy survives a rotation and keeps honouring the
 	// revoked token while refusing the new one.
-	root.Handle("/mcp", mcpserver.NewStreamableHTTPServer(mcpSrv,
-		mcpserver.WithHTTPContextFunc(mcppkg.AuthContextFunc(apiSrv.TokenValue))))
+	// Guarded as the API is (api.GuardMCP): reads are free only on the
+	// desktop; a person's API token acts as them.
+	root.Handle("/mcp", apiSrv.GuardMCP(mcpserver.NewStreamableHTTPServer(mcpSrv,
+		mcpserver.WithHTTPContextFunc(mcppkg.WriteContextFunc(apiSrv.MCPWriteAllowed)))))
 	// The agents the Conductor starts reach CodeDistill here, each with a
 	// token for its own run (api.AgentMCPHandler): they run where they
 	// cannot write the database.
@@ -985,10 +998,13 @@ func cmdServe(dbPath, model, endpoint, modelAPI, addr, appWindow string, ollamaA
 	// PWA manifest serves as text/plain and Chrome refuses to install.
 	_ = mime.AddExtensionType(".webmanifest", "application/manifest+json")
 	var spa http.Handler = http.FileServer(http.FS(webui.FS()))
-	if apiToken != "" {
+	if apiToken != "" && isLocalBind(addr) {
 		// Set the first-party auth cookie when serving the app shell so the
 		// SPA can make write requests without the token ever touching JS.
-		spa = withAuthCookie(apiSrv.TokenValue, secureCookies, spa)
+		// Only on a server listening on this machine alone, and never with
+		// sign-in on: anywhere else, loading the page would be the whole
+		// security. There the app asks for the token once (or signs in).
+		spa = withAuthCookie(apiSrv.TokenValue, apiSrv.SignInConfigured, secureCookies, spa)
 	}
 	root.Handle("/", spa)
 
@@ -1002,6 +1018,10 @@ func cmdServe(dbPath, model, endpoint, modelAPI, addr, appWindow string, ollamaA
 	}
 	// The security knowledge base refreshes on each source's schedule.
 	apiSrv.StartSecurityKnowledge(ctx)
+	// The job queue: jobs left waiting before a restart start now, as slots
+	// allow. After InterruptStaleJobs above, so a job that died with the last
+	// process does not hold a slot.
+	apiSrv.StartJobQueue(ctx)
 
 	srv := &http.Server{
 		Addr:              addr,
@@ -1614,9 +1634,11 @@ func isLocalBind(addr string) bool {
 // value meant that after a rotation every app-shell load re-wrote the browser's
 // cookie with the REVOKED token, so the UI's own writes started failing until
 // the process restarted — "Regenerate token" broke the app that offers it.
-func withAuthCookie(token func() string, secure bool, next http.Handler) http.Handler {
+func withAuthCookie(token func() string, signIn func() bool, secure bool, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		api.SetAuthCookie(w, token(), secure || r.TLS != nil)
+		if !signIn() {
+			api.SetAuthCookie(w, token(), secure || r.TLS != nil)
+		}
 		next.ServeHTTP(w, r)
 	})
 }

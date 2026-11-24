@@ -54,6 +54,9 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 		writeMsg(w, http.StatusBadRequest, "name is required")
 		return
 	}
+	if req.RepoRoot != "" && !s.allowRepoPath(w, r) {
+		return
+	}
 	now := time.Now().UTC()
 	p := &domain.Project{
 		ID:        id.New(),
@@ -113,7 +116,10 @@ func (s *Server) updateProject(w http.ResponseWriter, r *http.Request) {
 		}
 		p.Name = *req.Name
 	}
-	if req.RepoRoot != nil {
+	if req.RepoRoot != nil && *req.RepoRoot != p.RepoRoot {
+		if !s.allowRepoPath(w, r) {
+			return
+		}
 		p.RepoRoot = *req.RepoRoot
 	}
 	if err := s.store.UpdateProject(r.Context(), p); err != nil {

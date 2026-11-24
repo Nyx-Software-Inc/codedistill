@@ -117,9 +117,12 @@ const (
 type WorkspaceMember struct {
 	WorkspaceID string    `json:"workspace_id"`
 	UserID      string    `json:"user_id"`
-	Role        string    `json:"role"`   // "owner" | "admin" | "member"
+	Role        string    `json:"role"`   // legacy single role, kept in step with Roles
 	Status      string    `json:"status"` // "invited" | "active" | "deactivated"
 	CreatedAt   time.Time `json:"created_at"`
+	// Roles are what the member may do: the union of these roles'
+	// permissions (permission.go). The truth; Role is derived from it.
+	Roles []string `json:"roles"`
 }
 
 // ProjectMember ties a User to a Project. A user can be a workspace member

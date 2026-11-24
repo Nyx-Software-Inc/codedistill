@@ -25,46 +25,66 @@ import (
 // Workspace members.
 
 func (s *Store) AddWorkspaceMember(ctx context.Context, m *domain.WorkspaceMember) error {
-	status := m.Status
-	if status == "" {
-		status = domain.MemberActive
-	}
-	_, err := s.DB.ExecContext(ctx,
-		`INSERT INTO workspace_members (workspace_id, user_id, role, status, created_at)
-		 VALUES (?, ?, ?, ?, ?)`,
-		m.WorkspaceID, m.UserID, m.Role, status, m.CreatedAt,
-	)
+	_, err := s.addMember(ctx, m, 0)
 	return err
 }
 
-// TryAddWorkspaceMember inserts an active member only if a licensed seat is
-// free — the seat count is a subquery INSIDE the INSERT, so the check-then-act
-// race (two first-logins both passing a separate COUNT and both inserting,
-// overselling the license — audit M18) can't open. Returns whether the row
-// landed; false means seats are full. The guard mirrors
-// CountActiveWorkspaceMembers exactly (active, excluding the implicit 'local'
-// identity). Caller must pass seats > 0 (an unlimited license skips the guard).
+// TryAddWorkspaceMember adds a member only if, when their roles take a seat
+// (they may use the product), a licensed seat is free. The count is made
+// inside the same write, under a lock, so two first sign-ins cannot both pass
+// it and oversell the license (audit M18). Returns whether the member landed;
+// false means seats are full. Caller passes seats > 0 (an unlimited license
+// skips the guard).
 func (s *Store) TryAddWorkspaceMember(ctx context.Context, m *domain.WorkspaceMember, seats int) (bool, error) {
+	return s.addMember(ctx, m, seats)
+}
+
+// memberRoles is what a member is given: their Roles, or their legacy Role
+// for a caller that names only that.
+func memberRoles(m *domain.WorkspaceMember) []string {
+	if len(m.Roles) > 0 {
+		return m.Roles
+	}
+	switch m.Role {
+	case domain.RoleOwner:
+		return []string{domain.RoleOwner, domain.RoleMember}
+	case domain.RoleAdmin:
+		return []string{domain.RoleAdmin, domain.RoleLead}
+	}
+	return []string{domain.RoleMember}
+}
+
+func (s *Store) addMember(ctx context.Context, m *domain.WorkspaceMember, seats int) (bool, error) {
 	status := m.Status
 	if status == "" {
 		status = domain.MemberActive
 	}
-	return s.underSeatLock(ctx, m.WorkspaceID, `
-		INSERT INTO workspace_members (workspace_id, user_id, role, status, created_at)
-		SELECT ?, ?, ?, ?, ?
-		 WHERE (SELECT COUNT(*) FROM workspace_members
-		          WHERE workspace_id = ? AND status = ? AND user_id != 'local') < ?`,
-		m.WorkspaceID, m.UserID, m.Role, status, m.CreatedAt,
-		m.WorkspaceID, domain.MemberActive, seats)
+	roles := memberRoles(m)
+	return s.seatGuarded(ctx, m.WorkspaceID, m.UserID, seats, func(tx *dbx.Tx) error {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO workspace_members (workspace_id, user_id, role, status, created_at)
+			 VALUES (?, ?, ?, ?, ?)`,
+			m.WorkspaceID, m.UserID, legacyRole(roles), status, m.CreatedAt); err != nil {
+			return err
+		}
+		for _, r := range roles {
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO member_roles (workspace_id, user_id, role_id) VALUES (?, ?, ?)`,
+				m.WorkspaceID, m.UserID, r); err != nil {
+				return fmt.Errorf("member role %s: %w", r, err)
+			}
+		}
+		return nil
+	})
 }
 
-// underSeatLock runs a seat-guarded write so that concurrent ones cannot all
-// pass the guard. On SQLite one writer at a time already holds. On Postgres,
-// READ COMMITTED lets every concurrent statement count the members as they
-// were before any of them committed, so all of them see a free seat: measured,
-// 8 members added under a 2-seat license. A per-workspace advisory lock, held
-// until the transaction ends, makes them take turns.
-func (s *Store) underSeatLock(ctx context.Context, workspaceID, query string, args ...any) (bool, error) {
+// seatGuarded runs a write that may give a member a seat, and undoes it when
+// that leaves more seats taken than the license has (seats > 0). On Postgres,
+// READ COMMITTED lets concurrent writes each count the seats as they were
+// before the others committed (measured: 8 members under a 2-seat license),
+// so a per-workspace advisory lock, held until the transaction ends, makes
+// them take turns; on SQLite one writer at a time already holds.
+func (s *Store) seatGuarded(ctx context.Context, workspaceID, userID string, seats int, write func(tx *dbx.Tx) error) (bool, error) {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
@@ -75,29 +95,45 @@ func (s *Store) underSeatLock(ctx context.Context, workspaceID, query string, ar
 			return false, err
 		}
 	}
-	res, err := tx.ExecContext(ctx, query, args...)
-	if err != nil {
+	if err := write(tx); err != nil {
 		return false, err
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return false, err
+	if seats > 0 && userID != "local" {
+		var mine, taken int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM workspace_members wm
+			  WHERE wm.workspace_id = ? AND wm.user_id = ? AND wm.status = 'active' AND `+seatHolder,
+			workspaceID, userID).Scan(&mine); err != nil {
+			return false, err
+		}
+		if err := tx.QueryRowContext(ctx, `SELECT `+seatsTaken, workspaceID).Scan(&taken); err != nil {
+			return false, err
+		}
+		if mine > 0 && taken > seats {
+			return false, nil
+		}
 	}
-	return n > 0, tx.Commit()
+	return true, tx.Commit()
 }
 
-// TryActivateWorkspaceMember flips a non-active member to active only if a seat
-// is free, atomically (same guard as TryAddWorkspaceMember). Returns whether it
-// activated; false means the member was already active OR seats are full — the
-// caller re-reads to tell those apart. Caller must pass seats > 0.
+// TryActivateWorkspaceMember makes a non-active member active, if their roles
+// take a seat only while one is free (the same guard as adding). Returns
+// whether it activated; false means the member was already active OR seats
+// are full: the caller re-reads to tell those apart. Caller passes seats > 0.
 func (s *Store) TryActivateWorkspaceMember(ctx context.Context, workspaceID, userID string, seats int) (bool, error) {
-	return s.underSeatLock(ctx, workspaceID, `
-		UPDATE workspace_members SET status = ?
-		 WHERE workspace_id = ? AND user_id = ? AND status != ?
-		   AND (SELECT COUNT(*) FROM workspace_members
-		          WHERE workspace_id = ? AND status = ? AND user_id != 'local') < ?`,
-		domain.MemberActive, workspaceID, userID, domain.MemberActive,
-		workspaceID, domain.MemberActive, seats)
+	changed := false
+	ok, err := s.seatGuarded(ctx, workspaceID, userID, seats, func(tx *dbx.Tx) error {
+		res, err := tx.ExecContext(ctx,
+			`UPDATE workspace_members SET status = ? WHERE workspace_id = ? AND user_id = ? AND status != ?`,
+			domain.MemberActive, workspaceID, userID, domain.MemberActive)
+		if err != nil {
+			return err
+		}
+		n, _ := res.RowsAffected()
+		changed = n > 0
+		return nil
+	})
+	return ok && changed, err
 }
 
 // GetWorkspaceMember returns one member's role + status.
@@ -109,6 +145,9 @@ func (s *Store) GetWorkspaceMember(ctx context.Context, workspaceID, userID stri
 		Scan(&m.WorkspaceID, &m.UserID, &m.Role, &m.Status, &m.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("workspace member (%s, %s): %w", workspaceID, userID, storage.ErrNotFound)
+	}
+	if m.Roles, err = s.MemberRoles(ctx, workspaceID, userID); err != nil {
+		return nil, err
 	}
 	return m, nil
 }
@@ -128,30 +167,21 @@ func (s *Store) SetWorkspaceMemberStatus(ctx context.Context, workspaceID, userI
 	return nil
 }
 
-// SetWorkspaceMemberRole changes a member's role (promote/demote).
+// SetWorkspaceMemberRole gives a member the roles a legacy single role stood
+// for (owner: Owner and Member; admin: Admin and Lead; member: Member). Seats
+// are not checked; SetMemberRoles is the guarded way.
 func (s *Store) SetWorkspaceMemberRole(ctx context.Context, workspaceID, userID, role string) error {
-	res, err := s.DB.ExecContext(ctx,
-		`UPDATE workspace_members SET role = ? WHERE workspace_id = ? AND user_id = ?`,
-		role, workspaceID, userID)
-	if err != nil {
+	if _, err := s.GetWorkspaceMember(ctx, workspaceID, userID); err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("workspace member (%s, %s): %w", workspaceID, userID, storage.ErrNotFound)
-	}
-	return nil
+	_, err := s.SetMemberRoles(ctx, workspaceID, userID, memberRoles(&domain.WorkspaceMember{Role: role}), 0)
+	return err
 }
 
-// CountActiveWorkspaceMembers counts members consuming a licensed seat (active),
-// excluding the implicit 'local' bootstrap identity (a system user, not a real
-// seat — see migration 0006).
+// CountActiveWorkspaceMembers counts the members taking a licensed seat:
+// active, allowed to use the product, the implicit 'local' identity aside.
 func (s *Store) CountActiveWorkspaceMembers(ctx context.Context, workspaceID string) (int, error) {
-	var n int
-	err := s.DB.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM workspace_members
-		  WHERE workspace_id = ? AND status = ? AND user_id != 'local'`,
-		workspaceID, domain.MemberActive).Scan(&n)
-	return n, err
+	return s.CountSeatsTaken(ctx, workspaceID)
 }
 
 func (s *Store) RemoveWorkspaceMember(ctx context.Context, workspaceID, userID string) error {
@@ -187,7 +217,17 @@ func (s *Store) ListWorkspaceMembers(ctx context.Context, workspaceID string) ([
 		}
 		out = append(out, m)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	for _, m := range out {
+		var err error
+		if m.Roles, err = s.MemberRoles(ctx, workspaceID, m.UserID); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 // Project members.

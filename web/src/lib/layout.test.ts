@@ -17,6 +17,7 @@ import {
   defaultLayout, normalise, openPane, closePane, togglePane,
   activatePane, movePane, setPaneSize, paneSize, slotOf, isOpen,
   visibleSlots, paneDef, fromLegacy, type Layout,
+  floatPane, dockPane, floatOf, setFloatBounds, FLOAT_MIN_W, FLOAT_MIN_H,
 } from './layout';
 
 describe('the registry', () => {
@@ -152,6 +153,96 @@ describe('movePane — the operation drag and drop will call', () => {
   });
 });
 
+describe('popping a pane out', () => {
+  const withJobs = () => openPane(openPane(defaultLayout(), 'jobs'), 'inbox');
+
+  it('takes the pane out of its slot and remembers where it came from', () => {
+    const l = floatPane(withJobs(), 'jobs');
+    expect(slotOf(l, 'jobs')).toBeNull();
+    expect(floatOf(l, 'jobs')?.from).toBe('right');
+    expect(isOpen(l, 'jobs')).toBe(true);
+    // The slot it left still shows something.
+    expect(l.slots.right.active).toBe('inbox');
+  });
+
+  it('pops out a closed pane, returning it to its usual slot', () => {
+    const l = floatPane(defaultLayout(), 'review');
+    expect(floatOf(l, 'review')?.from).toBe('right');
+  });
+
+  it('refuses a pane that cannot float', () => {
+    const l = openPane(defaultLayout(), 'dock');
+    expect(floatPane(l, 'dock')).toBe(l);
+    expect(floatPane(l, 'nope')).toBe(l);
+  });
+
+  it('opens its window no smaller than usable', () => {
+    const f = floatOf(floatPane(openPane(defaultLayout(), 'tree'), 'tree'), 'tree')!;
+    expect(f.w).toBeGreaterThanOrEqual(FLOAT_MIN_W);
+    expect(f.h).toBeGreaterThanOrEqual(FLOAT_MIN_H);
+  });
+
+  it('keeps its window size while popped out, and forgets it once docked', () => {
+    let l = setFloatBounds(floatPane(withJobs(), 'jobs'), 'jobs', { w: 900, h: 650 });
+    // Popping out again (a second drag out) moves the window, keeps its size.
+    l = floatPane(l, 'jobs', { x: 10 });
+    expect(floatOf(l, 'jobs')).toMatchObject({ w: 900, h: 650, x: 10 });
+    l = floatPane(dockPane(l, 'jobs'), 'jobs');
+    expect(floatOf(l, 'jobs')?.w).toBe(Math.max(FLOAT_MIN_W, paneSize(l, 'jobs')));
+  });
+
+  it('records bounds, clamped, and ignores what is not a number', () => {
+    let l = floatPane(withJobs(), 'jobs');
+    l = setFloatBounds(l, 'jobs', { w: 10, h: 10, x: NaN, y: 30.6 });
+    expect(floatOf(l, 'jobs')).toMatchObject({ w: FLOAT_MIN_W, h: FLOAT_MIN_H, y: 31 });
+    expect(floatOf(l, 'jobs')?.x).toBeUndefined();
+    expect(setFloatBounds(withJobs(), 'jobs', { w: 900 })).toEqual(withJobs());
+  });
+
+  it('docks back into the slot it came from, showing', () => {
+    let l = movePane(withJobs(), 'jobs', 'bottom');
+    l = dockPane(floatPane(l, 'jobs'), 'jobs');
+    expect(slotOf(l, 'jobs')).toBe('bottom');
+    expect(l.slots.bottom.active).toBe('jobs');
+    expect(floatOf(l, 'jobs')).toBeNull();
+  });
+
+  it('docks where it was dropped', () => {
+    const l = dockPane(floatPane(withJobs(), 'jobs'), 'jobs', 'left', 0);
+    expect(l.slots.left.panes).toEqual(['jobs']);
+  });
+
+  it('a move into a slot docks it too', () => {
+    const l = movePane(floatPane(withJobs(), 'jobs'), 'jobs', 'bottom');
+    expect(floatOf(l, 'jobs')).toBeNull();
+    expect(slotOf(l, 'jobs')).toBe('bottom');
+  });
+
+  it('open and toggle leave a popped-out pane where it is', () => {
+    const l = floatPane(withJobs(), 'jobs');
+    expect(openPane(l, 'jobs')).toBe(l);
+    expect(togglePane(l, 'jobs')).toBe(l);
+  });
+
+  it('close removes it, and opening again uses its usual slot', () => {
+    let l = closePane(floatPane(withJobs(), 'jobs'), 'jobs');
+    expect(isOpen(l, 'jobs')).toBe(false);
+    l = openPane(l, 'jobs');
+    expect(slotOf(l, 'jobs')).toBe('right');
+  });
+
+  it('never mutates its input', () => {
+    const l = withJobs();
+    const before = JSON.stringify(l);
+    const f = floatPane(l, 'jobs');
+    setFloatBounds(f, 'jobs', { w: 999 });
+    dockPane(f, 'jobs');
+    closePane(f, 'jobs');
+    expect(JSON.stringify(l)).toBe(before);
+    expect(floatOf(f, 'jobs')?.w).not.toBe(999);
+  });
+});
+
 describe('insertionIndex — where a dropped tab lands', () => {
   // Three 100px tabs: [0,100] [100,200] [200,300]. Midpoints at 50, 150, 250.
   const tabs = [
@@ -274,6 +365,29 @@ describe('normalise — stored layouts outlive the code that wrote them', () => 
     expect(paneSize(l, 'inbox')).toBe(paneDef('inbox')!.size);
     expect(l.sizes.ghost).toBeUndefined();
     expect(paneSize(l, 'tree')).toBe(paneDef('tree')!.size);
+  });
+
+  it('loads popped-out panes, and drops bad ones', () => {
+    const l = normalise({
+      slots: { right: { panes: ['jobs'], active: 'jobs' } },
+      floating: [
+        { pane: 'review', from: 'bottom', w: 800, h: 600, x: 5, y: 6 },
+        { pane: 'jobs', from: 'right', w: 500, h: 500 }, // also in a slot
+        { pane: 'dock', from: 'right', w: 500, h: 500 }, // cannot float
+        { pane: 'gone', from: 'left', w: 500, h: 500 },
+        { pane: 'inbox', from: 'top', w: 'wide' }, // bad slot, bad size
+        'junk',
+      ],
+    });
+    expect(l.floating.map((f) => f.pane)).toEqual(['review', 'inbox']);
+    expect(floatOf(l, 'review')).toEqual({ pane: 'review', from: 'bottom', w: 800, h: 600, x: 5, y: 6 });
+    expect(floatOf(l, 'inbox')?.from).toBe('right');
+    expect(slotOf(l, 'jobs')).toBe('right');
+  });
+
+  it('loads a layout stored before panes could pop out', () => {
+    const l = normalise({ slots: { left: { panes: ['tree'], active: 'tree' } }, sizes: {} });
+    expect(l.floating).toEqual([]);
   });
 
   it('round-trips a layout it produced', () => {

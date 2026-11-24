@@ -54,6 +54,15 @@ func AuthContextFunc(token func() string) func(context.Context, *http.Request) c
 	}
 }
 
+// WriteContextFunc is AuthContextFunc with the decision made by the caller:
+// allowed reports, per HTTP request, whether it may call write tools (the
+// server's own token, or a person's API token whose role allows it).
+func WriteContextFunc(allowed func(*http.Request) bool) func(context.Context, *http.Request) context.Context {
+	return func(ctx context.Context, r *http.Request) context.Context {
+		return context.WithValue(ctx, writeAuthKey, allowed(r))
+	}
+}
+
 func requestToken(r *http.Request) string {
 	const p = "Bearer "
 	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, p) {

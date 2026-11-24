@@ -45,10 +45,14 @@ func NewOIDCAuth(_ context.Context, _, _, _, _ string) (*oidcAuth, error) {
 // NewOIDCAuth errors first) but must exist for main.go to compile.
 func (s *Server) WithAuth(_ *oidcAuth) *Server                      { return s }
 func (s *Server) WithMembershipPolicy(_ string, _ []string) *Server { return s }
+func (s *Server) WithTrustedEmail(_ bool) *Server                   { return s }
 
 // resolveIdentity is a pass-through in the CE: no OIDC session or per-user
 // token to resolve, so currentUser falls back to the local user.
 func (s *Server) resolveIdentity(next http.Handler) http.Handler { return next }
+
+// apiTokenUser: no personal API tokens in the community edition.
+func (s *Server) apiTokenUser(_ *http.Request) (string, bool) { return "", false }
 
 // Routed handlers — all report the feature unavailable. The login routes
 // mirror the real "not configured" 503; the rest are 403 paid-feature.
@@ -60,6 +64,11 @@ func (s *Server) listMembers(w http.ResponseWriter, _ *http.Request)      { paid
 func (s *Server) deactivateMember(w http.ResponseWriter, _ *http.Request) { paidMU(w) }
 func (s *Server) reactivateMember(w http.ResponseWriter, _ *http.Request) { paidMU(w) }
 func (s *Server) setMemberRole(w http.ResponseWriter, _ *http.Request)    { paidMU(w) }
+func (s *Server) setMemberRoles(w http.ResponseWriter, _ *http.Request)   { paidMU(w) }
+func (s *Server) memberSeats(w http.ResponseWriter, _ *http.Request)      { paidMU(w) }
+func (s *Server) listRoles(w http.ResponseWriter, _ *http.Request)        { paidMU(w) }
+func (s *Server) saveRole(w http.ResponseWriter, _ *http.Request)         { paidMU(w) }
+func (s *Server) deleteRole(w http.ResponseWriter, _ *http.Request)       { paidMU(w) }
 
 func (s *Server) createAPIToken(w http.ResponseWriter, _ *http.Request) { paidMU(w) }
 func (s *Server) listAPITokens(w http.ResponseWriter, _ *http.Request)  { paidMU(w) }

@@ -77,6 +77,29 @@
   const waiting = $derived(items.filter((i) => i.status === 'waiting').length);
   const labels = $derived([...new Set(items.flatMap((i) => i.labels ?? []))]);
 
+  // Tokens: every run's, including the ones still going on, whose numbers are
+  // running totals their agents report every few seconds. Input, output and
+  // cache are separate counts (input never includes the cache), so the total
+  // is their sum.
+  type Tok = { inp: number; out: number; cr: number; cw: number };
+  function tokOf(runs: AgentRun[]): Tok {
+    const t = { inp: 0, out: 0, cr: 0, cw: 0 };
+    for (const r of runs) {
+      t.inp += r.tokens_in ?? 0;
+      t.out += r.tokens_out ?? 0;
+      t.cr += r.cache_read ?? 0;
+      t.cw += r.cache_write ?? 0;
+    }
+    return t;
+  }
+  const sum = (t: Tok) => t.inp + t.out + t.cr + t.cw;
+  const tokTitle = (t: Tok) =>
+    `${t.inp.toLocaleString()} in · ${t.out.toLocaleString()} out · ${t.cr.toLocaleString()} read from cache · ${t.cw.toLocaleString()} written to cache`;
+  const jobTok = $derived(tokOf(items.flatMap((i) => i.runs)));
+  /** Whether a run reported any numbers at all: unknown is not zero. */
+  const known = (r: AgentRun) => r.tokens_in != null || r.tokens_out != null || r.cache_read != null || r.cache_write != null;
+  const liveOf = (i: FixJobItem) => i.runs.filter((r) => r.outcome === 'running');
+
   async function copy(what: string, text: string) {
     try {
       await navigator.clipboard.writeText(text);
@@ -104,12 +127,16 @@
     const role = r.lens ? `${r.lens} reviewer` : (ROLE[r.role] ?? r.role);
     return `${role} · ${r.phase} r${r.round}`;
   }
+  function roleOf(r: AgentRun): string {
+    return r.lens ? `${r.lens} reviewer` : (ROLE[r.role] ?? r.role);
+  }
   function secs(ms: number): string {
     const s = Math.round(ms / 1000);
     return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
   }
   function k(n?: number): string {
     if (n == null) return '—';
+    if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
     return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
   }
   function phaseLine(i: FixJobItem): string {
@@ -145,6 +172,7 @@
   {/if}
   <div class="summary">
     {fixed} fixed · {waiting} waiting on you · {items.length} item{items.length === 1 ? '' : 's'}
+    {#if sum(jobTok) > 0}· <span class="tok" title={tokTitle(jobTok)}>{k(sum(jobTok))} tokens</span>{/if}
     {#each labels as l}<span class="label" class:warn={l === 'uncontained'}>{l}</span>{/each}
   </div>
   {#if error}<p class="err" role="alert">{error}</p>{/if}
@@ -162,6 +190,14 @@
       {#if i.status === 'running' && i.progress_note}
         <div class="progress" class:silent={silent(i)}>
           {#if silent(i)}silent for a while — last: {/if}{i.progress_note}
+        </div>
+      {/if}
+      {#if i.status === 'running' && liveOf(i).length}
+        <!-- What the agents working this item have used so far, live. -->
+        <div class="live-use">
+          {#each liveOf(i) as r (r.id)}
+            <span title={tokTitle(tokOf([r]))}>{roleOf(r)}: {known(r) ? `${k(sum(tokOf([r])))} tokens` : 'starting'}{r.turns ? ` · ${r.turns} turn${r.turns === 1 ? '' : 's'}` : ''}</span>
+          {/each}
         </div>
       {/if}
       {#if i.reason && i.status !== 'fixed'}<p class="reason">{i.reason}</p>{/if}
@@ -198,16 +234,16 @@
           {/if}
           {#if i.runs.length}
             <div class="runs-wrap"><table class="runs">
-              <thead><tr><th>Agent</th><th>Model</th><th>Outcome</th><th>Time</th><th>Turns</th><th>Tokens out</th></tr></thead>
+              <thead><tr><th>Agent</th><th>Model</th><th>Outcome</th><th>Time</th><th>Turns</th><th>Tokens</th></tr></thead>
               <tbody>
                 {#each i.runs as r (r.id)}
-                  <tr>
+                  <tr class:live={r.outcome === 'running'}>
                     <td>{who(r)}</td>
                     <td class="mono">{r.model || r.agent || '—'}</td>
-                    <td>{r.outcome}</td>
+                    <td>{r.outcome === 'running' ? 'working…' : r.outcome}</td>
                     <td>{secs(r.duration_ms)}</td>
                     <td>{r.turns ?? '—'}</td>
-                    <td>{k(r.tokens_out)}</td>
+                    <td title={known(r) ? tokTitle(tokOf([r])) : 'not reported'}>{known(r) ? k(sum(tokOf([r]))) : '—'}</td>
                   </tr>
                 {/each}
               </tbody>
@@ -264,6 +300,17 @@
   .top { color: var(--text-dim); display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2;
          -webkit-box-orient: vertical; overflow: hidden; }
   .runs-wrap { overflow-x: auto; }
+  .runs tr.live td { color: var(--accent); }
+  .tok { cursor: help; }
+  .live-use {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.2rem 0.8rem;
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    padding-left: 1.4rem;
+  }
+  .live-use span { cursor: help; }
   .runs { border-collapse: collapse; font-size: 0.72rem; width: 100%; max-width: 40rem; }
   .runs th { text-align: left; color: var(--text-dim); font-weight: normal; padding: 0.1rem 0.6rem 0.1rem 0; }
   .runs td { padding: 0.1rem 0.6rem 0.1rem 0; white-space: nowrap; }

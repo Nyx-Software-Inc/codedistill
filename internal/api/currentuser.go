@@ -14,6 +14,7 @@
 package api
 
 import (
+	"codedistill/internal/domain"
 	"context"
 	"net/http"
 )
@@ -32,20 +33,11 @@ const localWorkspaceID = "local"
 // is always admin. Build-neutral (used by the free file browser's access gate),
 // so it lives here rather than in the CE-stripped admin_members.go — otherwise
 // the oss build can't compile fs_browse.go's admin check.
+//
+// Kept for what still asks the old question; new code asks for a permission
+// (authz.go). An anonymous request on a multi-user server holds none (audit C2).
 func (s *Server) isAdmin(r *http.Request) bool {
-	// Multi-user servers: admin rights require an authenticated per-user
-	// identity. Without this, an anonymous request resolves to the "local"
-	// fallback user — which migration 0006 seeds as workspace OWNER for
-	// single-user installs — handing the roster and member lifecycle to
-	// anyone who can reach the port (audit C2).
-	if s.auth != nil && !isAuthenticated(r.Context()) {
-		return false
-	}
-	m, err := s.store.GetWorkspaceMember(r.Context(), localWorkspaceID, s.currentUser(r))
-	if err != nil {
-		return false
-	}
-	return m.Role == "owner" || m.Role == "admin"
+	return s.can(r, domain.PermManageMembers) || s.can(r, domain.PermAdminister)
 }
 
 type userCtxKey struct{}

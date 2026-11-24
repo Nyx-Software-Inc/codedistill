@@ -76,7 +76,7 @@
   import {
     initLayout, visibleSlots, activePane, paneSize as paneWidth,
     openPane as openPaneById, closePane as closePaneById,
-    draggingPane, endDrag, movePane as movePaneTo,
+    draggingPane, beginDrag, endDrag, EXTERNAL_DRAG, movePane as movePaneTo,
     setPaneSize as setPaneWidth, flushPaneSize, togglePane, isPaneOpen, paneSlot,
   } from './lib/layoutStore.svelte';
   import CodeAnalysisPanel from './components/CodeAnalysisPanel.svelte';
@@ -88,6 +88,7 @@
     shortcutLabel, setCommandContext, installShortcuts, type Command,
   } from './lib/commands.svelte';
   import { resetLayout } from './lib/layoutStore.svelte';
+  import { initMainWindow, shareState, popoutNotice, reopenBlocked, type Call } from './lib/popout.svelte';
   import CreditsModal from './components/CreditsModal.svelte';
   import type { CodeAnchorWithOwner, CodeAnchor } from './lib/types';
 
@@ -1045,7 +1046,8 @@
 
   function dropInto(e: DragEvent, s: SlotID) {
     e.preventDefault();
-    const id = e.dataTransfer?.getData('application/x-codedistill-pane') || draggingPane();
+    const d = e.dataTransfer?.getData('application/x-codedistill-pane') || draggingPane();
+    const id = d === EXTERNAL_DRAG ? null : d;
     endDrag();
     if (id) movePaneTo(id, s);
   }
@@ -1656,6 +1658,14 @@
       void initTheme();
       void initFonts();
       void initUiPrefs();
+      // The pane layout, then the popped-out windows it names. Not awaited:
+      // the layout's default is valid for the frame before it loads.
+      void initLayout().then(() => {
+        cleanupPopouts = initMainWindow(
+          () => ({ projectId: activeProjectId, changeset: activeChangeset }),
+          runPaneCall,
+        );
+      });
       api.getVersion().then((v) => (buildInfo = v)).catch(() => {});
       // License is fire-and-forget too — see the `licensed` helper for
       // why null is treated as permissive.
@@ -1775,12 +1785,82 @@
       if (debounceTimer) clearTimeout(debounceTimer);
       clearInterval(jobsBadgeTimer);
       cleanupSSE?.();
+      cleanupPopouts?.();
     };
   });
   let cleanupSSE: (() => void) | undefined;
+  let cleanupPopouts: (() => void) | undefined;
+
+  // ── Popped-out panes ──────────────────────────────────────────────────────
+  //
+  // A pane in a window of its own asks this window to do what its callbacks do
+  // here (paneContent below), and is told the project and changeset it shows.
+
+  function runPaneCall(c: Call) {
+    switch (c.fn) {
+      case 'openItem':
+        if (c.ownerType === 'todo_item' || c.ownerType === 'bug_item' || c.ownerType === 'use_case_item') {
+          void openDockedFull(c.ownerType, c.ownerId);
+        }
+        break;
+      case 'openFile': openFileInCanvas(c.path); break;
+      case 'openChangeset': activeChangeset = c.changeset; openPaneById('review'); break;
+      case 'pickChangeset': activeChangeset = c.changeset; return;
+      case 'reviewJob': reviewJobId = c.jobId; break;
+      case 'newJob': submitOpen = true; break;
+      case 'projectImported':
+        void loadProjects().then(() => selectProject(c.projectId));
+        break;
+      case 'changed':
+        void refreshNeedsReviewCount();
+        scheduleRefresh();
+        return;
+    }
+    // What the pane asked for happens here, so this is the window to look at.
+    // Desktops that prevent focus stealing may only flag it instead.
+    window.focus();
+  }
+
+  $effect(() => {
+    // Read both so either change is shared.
+    void activeProjectId;
+    void activeChangeset;
+    shareState();
+  });
+
+  // A pane's tab dragged here from a popped-out window. Its id cannot be read
+  // until the drop, but the slots need to know one is coming to offer
+  // themselves, as they do for a tab dragged within this window.
+  function isPaneDrag(e: DragEvent): boolean {
+    return !!e.dataTransfer?.types.includes('application/x-codedistill-pane');
+  }
+  function onWindowDragEnter(e: DragEvent) {
+    if (!draggingPane() && isPaneDrag(e)) beginDrag(EXTERNAL_DRAG);
+  }
+  function onWindowDragLeave(e: DragEvent) {
+    if (e.relatedTarget === null && draggingPane() === EXTERNAL_DRAG) endDrag();
+  }
+  function onWindowDrop() {
+    if (draggingPane() === EXTERNAL_DRAG) endDrag();
+  }
 </script>
 
+<svelte:document ondragenter={onWindowDragEnter} ondragleave={onWindowDragLeave} ondrop={onWindowDrop} />
+
 <main class={easterTheme}>
+  {#if popoutNotice.blocked.length > 0}
+    <!-- The browser refused a popped-out pane's window: at start, when nothing
+         was clicked, or by a popup blocker. A click is a gesture it accepts. -->
+    <div class="license-banner notice" role="status">
+      <span>
+        {popoutNotice.blocked.map((id) => paneDef(id)?.title ?? id).join(', ')}
+        {popoutNotice.blocked.length === 1 ? 'is' : 'are'} popped out, but the browser blocked
+        {popoutNotice.blocked.length === 1 ? 'its window' : 'their windows'}. Allow pop-ups for
+        CodeDistill to have them open on their own.
+      </span>
+      <button class="act" onclick={reopenBlocked}>Open {popoutNotice.blocked.length === 1 ? 'it' : 'them'}</button>
+    </div>
+  {/if}
   {#if activity.busy && uiPrefs.activityWave}
     <div class="activity-bar" role="status" aria-label="Working…"></div>
   {/if}
@@ -2396,6 +2476,15 @@
     border-bottom-color: var(--p-1e3a52);
   }
   .license-banner span { flex: 1; }
+  .license-banner .act {
+    background: transparent;
+    border: 1px solid currentColor;
+    border-radius: 3px;
+    color: inherit;
+    font: inherit;
+    padding: 1px 8px;
+    cursor: pointer;
+  }
   .license-banner .dismiss {
     background: transparent;
     border: none;

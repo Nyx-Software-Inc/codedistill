@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"codedistill/internal/domain"
+	"codedistill/internal/jobqueue"
 )
 
 // The jobs monitor: what is running, what it is running ON, and how far along.
@@ -49,6 +50,14 @@ type jobView struct {
 	ProviderLocal bool   `json:"provider_local,omitempty"`
 
 	ElapsedSeconds int `json:"elapsed_seconds"`
+
+	// Position is a waiting job's place in the job queue, from 1; absent for
+	// any other job. Its priority, once aged, decides it.
+	Position int `json:"position,omitempty"`
+
+	// CanResume: paused or interrupted, and a kind of job that carries on
+	// where it stopped. The monitor offers Resume on exactly these.
+	CanResume bool `json:"can_resume,omitempty"`
 
 	// What the run PRODUCED, for workflows whose output waits on a person.
 	//
@@ -105,12 +114,27 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The line is the whole installation's, not this project's: a job's place
+	// counts every project's waiting jobs.
+	var line []*domain.Job
+	aging := s.jobAging(r.Context())
+	for _, j := range jobs {
+		if j.Status == domain.JobQueued {
+			line, _ = s.store.ListQueuedJobs(r.Context())
+			break
+		}
+	}
+
 	out := make([]jobView, 0, len(jobs))
 	for _, j := range jobs {
 		v := jobView{
 			Job: j, Percent: j.Percent(), ETASeconds: j.ETASeconds(now),
 			WorkerType: workerForJob[j.Type],
 		}
+		if j.Status == domain.JobQueued {
+			v.Position = jobqueue.Position(line, j.ID, now, aging, s.fixedPriority)
+		}
+		v.CanResume = (j.Status == domain.JobPaused || j.Status == domain.JobInterrupted) && s.canPause(j.Type)
 		end := now
 		if j.FinishedAt != nil {
 			end = *j.FinishedAt
@@ -203,6 +227,13 @@ func (s *Server) pauseJob(w http.ResponseWriter, r *http.Request) {
 		writeMsg(w, http.StatusNotFound, "no such job")
 		return
 	}
+	if !s.allowJobControl(w, r, j) {
+		return
+	}
+	if j.Status == domain.JobQueued {
+		writeMsg(w, http.StatusConflict, "this job is still waiting in line, so there is nothing to pause — cancel it, or leave it waiting")
+		return
+	}
 	if !j.Active() {
 		w.WriteHeader(http.StatusNoContent) // already stopped; two clicks are not an error
 		return
@@ -218,7 +249,7 @@ func (s *Server) pauseJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now().UTC()
-	if err := s.store.FinishJob(r.Context(), j.ID, domain.JobPaused, "", now); err != nil {
+	if _, err := s.store.PauseJob(r.Context(), j.ID, domain.PausedByPerson, now); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -236,7 +267,7 @@ func (s *Server) pauseJob(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// cancelJob stops a running job.
+// cancelJob stops a running job, or takes a waiting one out of the line.
 //
 // It records the intent; the worker notices on its next cancellation check.
 // Deliberately not waiting for that: a job mid-model-call may take minutes to
@@ -253,7 +284,10 @@ func (s *Server) cancelJob(w http.ResponseWriter, r *http.Request) {
 		writeMsg(w, http.StatusNotFound, "no such job")
 		return
 	}
-	if !j.Active() {
+	if !s.allowJobControl(w, r, j) {
+		return
+	}
+	if !j.Pending() {
 		// Already finished. Not an error: two clicks on a slow list should not
 		// produce a failure.
 		w.WriteHeader(http.StatusNoContent)
@@ -268,6 +302,8 @@ func (s *Server) cancelJob(w http.ResponseWriter, r *http.Request) {
 		run.cancel()
 	}
 	s.stopJob(id)
+	// A slot may be free now: the next in line need not wait for the poll.
+	s.jobQueue().Kick()
 	w.WriteHeader(http.StatusNoContent)
 }
 

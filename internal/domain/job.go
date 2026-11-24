@@ -20,6 +20,9 @@ import "time"
 // failed, because nothing went wrong with the work — the server went away —
 // and a client may be able to resume it.
 const (
+	// JobQueued: waiting for a job slot (docs/design/job-queue.md). Nothing of
+	// it has started, so there is nothing to clean up if it is cancelled.
+	JobQueued      = "queued"
 	JobRunning     = "running"
 	JobSucceeded   = "succeeded"
 	JobFailed      = "failed"
@@ -37,6 +40,40 @@ const (
 	// says so rather than implying otherwise.
 	JobPaused = "paused"
 )
+
+// Job priorities. The queue orders waiting jobs by priority, then by when they
+// joined the line; a job that has waited long enough moves up a level, so a
+// stream of high-priority jobs cannot starve a low one. Immediate starts at
+// once (docs/design/job-queue.md, "Priority").
+const (
+	PriorityLow       = "low"
+	PriorityMedium    = "medium"
+	PriorityHigh      = "high"
+	PriorityImmediate = "immediate"
+)
+
+// JobPriorityRank orders job priorities, higher first in line. An unknown value ranks
+// as medium, the default.
+func JobPriorityRank(p string) int {
+	switch p {
+	case PriorityLow:
+		return 0
+	case PriorityHigh:
+		return 2
+	case PriorityImmediate:
+		return 3
+	}
+	return 1
+}
+
+// ValidJobPriority reports whether p is one of the priorities a job can have.
+func ValidJobPriority(p string) bool {
+	switch p {
+	case PriorityLow, PriorityMedium, PriorityHigh, PriorityImmediate:
+		return true
+	}
+	return false
+}
 
 // Job types. Open vocabulary: adding one must not need a migration.
 const (
@@ -85,13 +122,36 @@ type Job struct {
 	// nothing to the repository.
 	Branch  string `json:"branch,omitempty"`
 	BaseSHA string `json:"base_sha,omitempty"`
+
+	// Priority orders the job in the queue: low, medium (the default), high
+	// or immediate. QueuedAt is when it joined the line; nil for a job that
+	// started straight away or ran before the queue existed. A queued job's
+	// StartedAt is its submit time until it leaves the line.
+	Priority string     `json:"priority"`
+	QueuedAt *time.Time `json:"queued_at,omitempty"`
+	// PausedBy says who stopped a paused or re-queued job: a person, the
+	// queue (to make room for an Immediate job) or a restart. Empty once it
+	// runs again.
+	PausedBy string `json:"paused_by,omitempty"`
 }
+
+// Who paused a job.
+const (
+	PausedByPerson  = "person"  // stays paused until someone resumes it
+	PausedByQueue   = "queue"   // made room for an Immediate job; resumes on its own
+	PausedByRestart = "restart" // running when the server stopped; resumes on its own
+)
 
 // Active reports whether the job is still doing work.
 // Active reports whether the job is still doing work. A paused job is not
 // active — nothing is running — but it is not finished either, which is why
 // Resumable exists separately.
 func (j *Job) Active() bool { return j.Status == JobRunning }
+
+// Pending reports whether the job is waiting or working: queued or running.
+// What a one-run-at-a-time guard must count, or two runs for the same thing
+// could both wait in line and then both start.
+func (j *Job) Pending() bool { return j.Status == JobQueued || j.Status == JobRunning }
 
 // Resumable reports whether this run can be continued. Paused and interrupted
 // both qualify: one was stopped deliberately, the other by a process dying, and
@@ -137,7 +197,7 @@ func (j *Job) Percent() int {
 // ValidJobStatus mirrors the CHECK constraint on jobs.status.
 func ValidJobStatus(s string) bool {
 	switch s {
-	case JobRunning, JobSucceeded, JobFailed, JobCancelled, JobInterrupted, JobPaused:
+	case JobQueued, JobRunning, JobSucceeded, JobFailed, JobCancelled, JobInterrupted, JobPaused:
 		return true
 	}
 	return false

@@ -31,7 +31,8 @@ import (
 // have to un-duplicate.
 func (s *Store) ListWorkflows(ctx context.Context) ([]*domain.Workflow, error) {
 	rows, err := s.DB.QueryContext(ctx,
-		`SELECT id, name, description, builtin, resumable, enabled, created_at, updated_at
+		`SELECT id, name, description, builtin, resumable, enabled, created_at, updated_at,
+		        max_priority, fixed_priority
 		 FROM workflows ORDER BY builtin DESC, name`)
 	if err != nil {
 		return nil, fmt.Errorf("list workflows: %w", err)
@@ -42,14 +43,15 @@ func (s *Store) ListWorkflows(ctx context.Context) ([]*domain.Workflow, error) {
 	byID := map[string]*domain.Workflow{}
 	for rows.Next() {
 		w := &domain.Workflow{}
-		var builtin, resumable, enabled int
+		var builtin, resumable, enabled, fixed int
 		var desc sql.NullString
 		if err := rows.Scan(&w.ID, &w.Name, &desc, &builtin, &resumable, &enabled,
-			&w.CreatedAt, &w.UpdatedAt); err != nil {
+			&w.CreatedAt, &w.UpdatedAt, &w.MaxPriority, &fixed); err != nil {
 			return nil, err
 		}
 		w.Description = desc.String
 		w.Builtin, w.Resumable, w.Enabled = builtin != 0, resumable != 0, enabled != 0
+		w.FixedPriority = fixed != 0
 		w.Steps = []domain.WorkflowStep{}
 		out = append(out, w)
 		byID[w.ID] = w
@@ -240,10 +242,11 @@ func (s *Store) CreateWorkflow(ctx context.Context, w *domain.Workflow) error {
 	defer tx.Rollback()
 
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO workflows (id, name, description, builtin, resumable, enabled, created_at, updated_at)
-		 VALUES (?, ?, ?, 0, ?, ?, ?, ?)`,
+		`INSERT INTO workflows (id, name, description, builtin, resumable, enabled, created_at, updated_at,
+		                        max_priority, fixed_priority)
+		 VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`,
 		w.ID, w.Name, w.Description, boolInt(w.Resumable), boolInt(w.Enabled),
-		w.CreatedAt, w.UpdatedAt); err != nil {
+		w.CreatedAt, w.UpdatedAt, maxPriorityOr(w.MaxPriority), boolInt(w.FixedPriority)); err != nil {
 		return fmt.Errorf("create workflow: %w", err)
 	}
 	for i, st := range w.Steps {
@@ -259,6 +262,15 @@ func (s *Store) CreateWorkflow(ctx context.Context, w *domain.Workflow) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// maxPriorityOr stores the default, High, for a workflow that names none: being
+// allowed to pause other work is a deliberate choice.
+func maxPriorityOr(p string) string {
+	if p == "" {
+		return domain.PriorityHigh
+	}
+	return p
 }
 
 // DeleteWorkflow removes a user-defined workflow. Built-ins are refused: their

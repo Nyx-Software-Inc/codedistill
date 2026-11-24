@@ -39,8 +39,13 @@ func TestBuiltinWorkflowsAreSeededAsData(t *testing.T) {
 	if d == nil {
 		t.Fatal("decompose workflow not seeded")
 	}
-	if !d.Builtin || !d.Resumable {
-		t.Errorf("decompose: builtin=%v resumable=%v, want both true", d.Builtin, d.Resumable)
+	// Not resumable since 0091: running it again starts a new run rather than
+	// carrying on the same job (docs/design/workflows-and-roles.md).
+	if !d.Builtin || d.Resumable || d.MaxPriority != domain.PriorityHigh || d.FixedPriority {
+		t.Errorf("decompose: builtin=%v resumable=%v max=%q fixed=%v", d.Builtin, d.Resumable, d.MaxPriority, d.FixedPriority)
+	}
+	if f := byID["fix_findings"]; f == nil || !f.Resumable || f.MaxPriority != domain.PriorityImmediate {
+		t.Errorf("fix_findings = %+v", f)
 	}
 	if len(d.Steps) != 1 || d.Steps[0].WorkerType != domain.WorkerDecomposer {
 		t.Fatalf("steps = %+v", d.Steps)

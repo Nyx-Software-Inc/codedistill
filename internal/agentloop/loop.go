@@ -60,6 +60,9 @@ type Config struct {
 	ContextTokens int // the model's context size; 0: assume 128k
 	// OnTool is told of each tool call as it starts (progress notes).
 	OnTool func(name string, args json.RawMessage)
+	// OnTurn is told the run's totals after each model turn (live token
+	// counts in the job card).
+	OnTurn func(turns int, usage ollama.ChatUsage)
 	Log    io.Writer // the run's log; nil: discarded
 }
 
@@ -142,6 +145,9 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 		res.Usage.Out += resp.Usage.Out
 		res.Usage.CacheRead += resp.Usage.CacheRead
 		res.Usage.CacheWrite += resp.Usage.CacheWrite
+		if cfg.OnTurn != nil {
+			cfg.OnTurn(res.Turns, res.Usage)
+		}
 		if strings.TrimSpace(resp.Text) != "" {
 			res.Text = resp.Text
 			fmt.Fprintf(log, "[turn %d] %s\n", res.Turns, resp.Text)

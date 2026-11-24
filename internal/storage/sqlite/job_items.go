@@ -69,6 +69,32 @@ func (s *Store) UpdateJobItem(ctx context.Context, it *domain.JobItem) error {
 	return nil
 }
 
+// ResetJobItem puts an item back to queued with nothing of its unfinished
+// attempt left that the next attempt would read: its claims, verdicts, notes
+// and tests go, its rounds and checks are cleared. Its agent runs stay, as the
+// record of what the attempt cost. For an item stopped part-way by a pause or a
+// restart, which starts again from its first round.
+func (s *Store) ResetJobItem(ctx context.Context, id string) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("reset job item: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, t := range []string{"claim_verdicts", "job_claims", "job_points", "job_tests"} {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM `+t+` WHERE job_item_id = ?`, id); err != nil {
+			return fmt.Errorf("reset job item: %s: %w", t, err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE job_items SET status = ?, reason = '', commit_sha = NULL, attempt_ref = NULL, rounds = 0,
+		        checks = '', progress_note = '', last_progress_at = NULL, started_at = NULL, finished_at = NULL,
+		        phase = ?
+		 WHERE id = ?`, domain.JobItemQueued, phaseOr(""), id); err != nil {
+		return fmt.Errorf("reset job item: %w", err)
+	}
+	return tx.Commit()
+}
+
 // ListJobItems returns a job's items in work order.
 func (s *Store) ListJobItems(ctx context.Context, jobID string) ([]*domain.JobItem, error) {
 	rows, err := s.DB.QueryContext(ctx,

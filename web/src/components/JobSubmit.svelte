@@ -11,6 +11,7 @@
   what is running) carry the weight of the rare one.
 -->
 <script lang="ts">
+  import { can } from '../lib/session.svelte';
   import * as api from '../lib/api';
   import type { Workflow, WorkflowParam } from '../lib/api';
   // Scratchpad is declared but not exported by the client; the shape used here
@@ -48,6 +49,9 @@
    *  rather than as a sentence under the OK button. */
   let badField = $state('');
   let result = $state<api.SubmitResult | null>(null);
+  /** Orders the job in the job queue when every slot is busy. */
+  let priority = $state<api.JobPriority>('medium');
+  let slots = $state<api.JobSlots | null>(null);
 
   const workflow = $derived(workflows.find((w) => w.id === chosen));
 
@@ -60,6 +64,7 @@
         api.listScratchpads(projectId).catch(() => [] as Pad[]),
       ]);
       workflows = (wfs ?? []).filter((w) => w.enabled);
+      api.getJobSlots().then((x) => (slots = x)).catch(() => (slots = null));
       scratchpads = sps ?? [];
       // Opened from a context (a finding, a scratchpad): that workflow, even if
       // a different one was chosen the last time the dialog was open.
@@ -94,6 +99,8 @@
     badField = '';
     error = '';
     result = null;
+    // A workflow that goes no higher than High cannot keep an Immediate choice.
+    if (priority === 'immediate' && w.max_priority !== 'immediate') priority = 'high';
   });
 
   /** What could plausibly be a document: an uploaded file, or a text item with
@@ -158,7 +165,7 @@
     error = '';
     badField = '';
     try {
-      const r = await api.submitJob(workflow.id, projectId, values);
+      const r = await api.submitJob(workflow.id, projectId, values, priority);
       result = r;
       onSubmitted?.(r.job_id);
     } catch (e) {
@@ -181,8 +188,15 @@
     return '';
   }
 
+  function ordinal(n: number): string {
+    const sfx = ['th', 'st', 'nd', 'rd'];
+    const v = n % 100;
+    return n + (sfx[(v - 20) % 10] || sfx[v] || sfx[0]);
+  }
+
   function close() {
     result = null;
+    priority = 'medium';
     error = '';
     onClose();
   }
@@ -200,7 +214,13 @@
   {#if result}
     <!-- Submitted. What the run is, and where it went. -->
     <div class="done">
-      <p class="started">Started on <strong>{result.label ?? chosen}</strong>.</p>
+      {#if result.queue && !result.queue.starts_now}
+        <!-- Every slot is busy: it waits its turn (docs/design/job-queue.md). -->
+        <p class="started">Queued: <strong>{result.label ?? chosen}</strong>, {ordinal(result.queue.position)} in line.</p>
+        <p class="detail">All {result.queue.slots} job slot{result.queue.slots === 1 ? ' is' : 's are'} busy; it starts when one frees.</p>
+      {:else}
+        <p class="started">Started on <strong>{result.label ?? chosen}</strong>.</p>
+      {/if}
       {#if result.provider}
         <p class="detail">
           Running on {result.provider}{result.model ? ` (${result.model})` : ''}.
@@ -311,6 +331,26 @@
         {#if p.help}<p class="help">{p.help}</p>{/if}
       </div>
     {/each}
+
+    <label class="field">
+      <span class="lbl">Priority</span>
+      <select bind:value={priority} disabled={busy}>
+        {#if workflow?.max_priority === 'immediate' && can('manage_all_jobs')}<option value="immediate">Immediate</option>{/if}
+        <option value="high">High</option>
+        <option value="medium">Medium</option>
+        <option value="low">Low</option>
+      </select>
+      <!-- Said before Start, not after: whether it runs now or waits. -->
+      {#if workflow?.fixed_priority}
+        <p class="help">This workflow's jobs keep the priority they are given: it cannot be raised later, and waiting does not raise it.</p>
+      {:else if priority === 'immediate'}
+        <p class="help">Starts now. If every job slot is busy, the lowest-priority fix job pauses to make room and carries on where it stopped when a slot frees.</p>
+      {:else if slots && slots.running >= slots.slots}
+        <p class="help">All {slots.slots} job slot{slots.slots === 1 ? ' is' : 's are'} busy{slots.queued ? ` and ${slots.queued} waiting` : ''}: this will wait its turn. Higher priority goes first.</p>
+      {:else}
+        <p class="help">Used when every job slot is busy: higher priority goes first.</p>
+      {/if}
+    </label>
 
     {#if error}<p class="err" role="alert">{error}</p>{/if}
 

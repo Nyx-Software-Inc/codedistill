@@ -12,8 +12,16 @@
  * ============================================================================= */
 
 import { mount } from 'svelte';
-import App from './App.svelte';
+import Root from './Root.svelte';
+import PaneWindow from './PaneWindow.svelte';
+import { paneWindowParams } from './lib/popout.svelte';
 import './app.css';
 
-const app = mount(App, { target: document.getElementById('app')! });
+// A popped-out pane's window (`?pane=jobs`) is the same page showing one pane;
+// everything else is the app (docs/design/panes.md, "Popping a pane out").
+const target = document.getElementById('app')!;
+const pane = paneWindowParams();
+// Root asks who is calling before the app loads: sign-in, the access token,
+// or the administration view come first where they apply.
+const app = pane ? mount(PaneWindow, { target, props: pane }) : mount(Root, { target });
 export default app;

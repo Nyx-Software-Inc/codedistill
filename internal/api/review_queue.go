@@ -56,7 +56,7 @@ func (s *Server) recordReviewForOwner(ownerType string) http.HandlerFunc {
 		d := &domain.ReviewDecision{
 			ID: id.New(), OwnerType: ownerType, OwnerID: ownerID,
 			Decision: decision, Note: strings.TrimSpace(req.Note),
-			CommitSHA: strings.TrimSpace(req.Commit), Reviewer: "local",
+			CommitSHA: strings.TrimSpace(req.Commit), Reviewer: s.currentUser(r),
 			CreatedAt: time.Now().UTC(),
 		}
 		if d.CommitSHA == "" {

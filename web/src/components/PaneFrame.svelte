@@ -16,8 +16,9 @@
   import { insertionIndex, paneDef, SLOTS, type SlotID } from '../lib/layout';
   import {
     slotPanes, activePane, activatePane, closePane, movePane,
-    draggingPane, beginDrag, endDrag,
+    draggingPane, beginDrag, endDrag, EXTERNAL_DRAG,
   } from '../lib/layoutStore.svelte';
+  import { popOut, dragOut, droppedOutside } from '../lib/popout.svelte';
 
   type Props = {
     slot: SlotID;
@@ -49,6 +50,20 @@
     if (id) movePane(id, to);
   }
 
+  function popOutActive() {
+    const id = active;
+    moveOpen = false;
+    if (id) popOut(id);
+  }
+
+  /** A tab let go outside the window pops its pane out, where the pane can be
+   *  (docs/design/panes.md, "Detecting a drop outside the window"). */
+  function onDragEnd(e: DragEvent, id: string) {
+    endDrag();
+    markerAt = null;
+    if (paneDef(id)?.floats && droppedOutside(e)) dragOut(id, e.screenX, e.screenY);
+  }
+
   // ── Drag and drop ─────────────────────────────────────────────────────────
   //
   // An input method over movePane, which already existed and was already
@@ -73,7 +88,8 @@
   }
 
   function dragged(e: DragEvent): string | null {
-    return e.dataTransfer?.getData(MIME) || draggingPane();
+    const d = e.dataTransfer?.getData(MIME) || draggingPane();
+    return d === EXTERNAL_DRAG ? null : d;
   }
 
   /** The index the pointer is asking for, from the live tab geometry. */
@@ -156,7 +172,7 @@
           aria-selected={id === active}
           draggable="true"
           ondragstart={(e) => onDragStart(e, id)}
-          ondragend={() => { endDrag(); markerAt = null; }}
+          ondragend={(e) => onDragEnd(e, id)}
           onclick={() => activatePane(id)}
         >{titleOf(id)}</button>
       {/each}
@@ -168,7 +184,7 @@
         <div class="move-wrap">
           <button
             class="pane-btn"
-            title="Move this pane to another edge"
+            title="Move this pane to another edge, or into a window of its own"
             aria-haspopup="menu"
             aria-expanded={moveOpen}
             onclick={() => (moveOpen = !moveOpen)}
@@ -182,6 +198,10 @@
               {#each elsewhere as s (s)}
                 <button role="menuitem" onclick={() => moveTo(s)}>Move to {s}</button>
               {/each}
+              {#if paneDef(active)?.floats}
+                <!-- The reliable way out: works where dragging out cannot. -->
+                <button role="menuitem" class="sep" onclick={popOutActive}>Pop out</button>
+              {/if}
             </div>
           {/if}
         </div>
@@ -330,6 +350,8 @@
     text-transform: capitalize;
   }
   .move-menu button:hover { background: var(--p-333333); }
+  /* Not a slot name, so not capitalised like one. */
+  .move-menu button.sep { text-transform: none; border-top: 1px solid var(--p-3a3a3a); border-radius: 0 0 3px 3px; }
 
   /* A tab mid-drag stays visible but recedes: hiding it would make the strip
      jump and move every other tab out from under the pointer. */

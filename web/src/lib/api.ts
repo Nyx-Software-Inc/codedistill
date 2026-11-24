@@ -127,8 +127,18 @@ export interface Me {
   email?: string;
   is_admin: boolean;
   multi_user: boolean;
+  /** What must happen before anything else: "sign_in" (login_url starts it)
+   *  or "token" (the server's access token, once). Absent: in. */
+  needs?: 'sign_in' | 'token';
+  login_url?: string;
+  /** What this person may do (docs/design/workflows-and-roles.md). */
+  permissions: string[];
+  roles: string[];
+  is_owner: boolean;
 }
 export const getMe = () => req<Me>('GET', '/me');
+/** Present the server's access token once; the server sets the cookie. */
+export const tokenSession = (token: string) => req<void>('POST', '/auth/token-session', { token });
 export const updateMe = (displayName: string) =>
   req<{ display_name: string }>('PATCH', '/me', { display_name: displayName });
 export const logout = () => req<void>('POST', '/auth/logout');
@@ -147,8 +157,28 @@ export interface Member {
   display_name: string;
   email?: string;
   role: string;
+  /** The roles held; what they may do is the union. */
+  roles: string[];
   status: string;
+  /** Active and allowed to use the product: takes a license seat. */
+  takes_seat: boolean;
+  /** The owner named by the server's configuration (CODEDISTILL_ADMIN_EMAIL). */
+  configured?: boolean;
 }
+export interface Role {
+  id: string;
+  name: string;
+  description?: string;
+  builtin: boolean;
+  permissions: string[];
+}
+export const listRoles = () => req<{ roles: Role[]; permissions: string[] }>('GET', '/roles');
+export const saveRole = (id: string, r: { name: string; description?: string; permissions: string[] }) =>
+  req<void>('PUT', `/roles/${encodeURIComponent(id)}`, r);
+export const deleteRole = (id: string) => req<void>('DELETE', `/roles/${encodeURIComponent(id)}`);
+export const setMemberRoles = (userID: string, roles: string[]) => req<void>('PUT', `/members/${userID}/roles`, { roles });
+/** The license's seats (0: unlimited) and how many are taken. */
+export const memberSeats = () => req<{ seats: number; taken: number }>('GET', '/members/seats');
 export const listMembers = () => req<Member[]>('GET', '/members');
 export const deactivateMember = (userID: string) => req<void>('POST', `/members/${userID}/deactivate`);
 export const reactivateMember = (userID: string) => req<void>('POST', `/members/${userID}/reactivate`);
@@ -1845,7 +1875,19 @@ export interface Job {
   scope_label?: string;
   /** paused is distinct from cancelled (abandoned) and interrupted (the
    *  process died): a human stopped it and expects it back. */
-  status: 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted' | 'paused';
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted' | 'paused';
+  /** Who started it: they may manage it with "manage their own jobs". */
+  created_by?: string;
+  /** Orders a waiting job in the job queue (docs/design/job-queue.md). */
+  priority?: JobPriority;
+  queued_at?: string;
+  /** A waiting job's place in the line, from 1. */
+  position?: number;
+  /** Who stopped it: a person, the queue (to make room for an Immediate job)
+   *  or a restart. The last two resume on their own. */
+  paused_by?: 'person' | 'queue' | 'restart';
+  /** Paused or interrupted, and able to carry on where it stopped. */
+  can_resume?: boolean;
   scope_kind?: string;
   scope_id?: string;
   phase?: string;
@@ -1987,9 +2029,14 @@ export interface Workflow {
   name: string;
   description?: string;
   builtin: boolean;
-  /** Whether a stopped run continues where it left off. Drives whether Pause
-   *  is offered at all — a Pause that silently means Cancel is worse than none. */
+  /** Can pause and resume: a stopped job carries on, as the same job, where
+   *  it stopped. Drives Pause, Resume, being paused to make room for an
+   *  Immediate job, and surviving a restart. */
   resumable: boolean;
+  /** The highest priority its jobs may have. */
+  max_priority: 'high' | 'immediate';
+  /** Its jobs keep the priority they were submitted with. */
+  fixed_priority: boolean;
   enabled: boolean;
   steps: WorkflowStep[];
   /** What the submission dialog asks for. Declared as data, so a workflow
@@ -2014,6 +2061,8 @@ export const listWorkflows = () => req<Workflow[]>('GET', '/workflows');
 
 export interface SubmitResult {
   job_id: string;
+  /** Where the job stands in the job queue. */
+  queue?: QueuePlace;
   label?: string;
   model?: string;
   provider?: string;
@@ -2023,10 +2072,40 @@ export interface SubmitResult {
   note?: string;
 }
 
-export const submitJob = (workflowId: string, projectId: string, params: Record<string, string>) =>
+export type JobPriority = 'low' | 'medium' | 'high' | 'immediate';
+
+/** Where a submitted job stands in the job queue. */
+export interface QueuePlace {
+  status: 'queued';
+  position: number;
+  slots: number;
+  running: number;
+  /** A slot is free for it: it starts within moments. */
+  starts_now: boolean;
+}
+
+export const submitJob = (workflowId: string, projectId: string, params: Record<string, string>, priority?: JobPriority) =>
   req<SubmitResult>('POST', '/jobs', {
-    workflow_id: workflowId, project_id: projectId, params,
+    workflow_id: workflowId, project_id: projectId, params, priority,
   });
+
+/** How many jobs may run at once, across every project, and why. */
+export interface JobSlots {
+  slots: number;
+  /** What this machine suggests: one per 8 GB of memory and per 4 cores. */
+  suggested: number;
+  /** The setting, when someone set it. */
+  configured?: number;
+  memory_gb: number;
+  cores: number;
+  aging_hours: number;
+  running: number;
+  queued: number;
+}
+export const getJobSlots = () => req<JobSlots>('GET', '/jobs/slots');
+export const resumeJob = (jobId: string) => req<QueuePlace>('POST', `/jobs/${jobId}/resume`);
+export const setJobPriority = (jobId: string, priority: JobPriority) =>
+  req<QueuePlace>('PUT', `/jobs/${jobId}/priority`, { priority });
 export const setStepProvider = (workflowId: string, ordinal: number, providerId: string) =>
   req<void>('PUT', `/workflows/${workflowId}/steps/${ordinal}/provider`, {
     provider_id: providerId,

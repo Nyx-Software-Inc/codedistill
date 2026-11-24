@@ -287,6 +287,17 @@ func (s *Store) applyMigration(ctx context.Context, name, script string) error {
 // anything.
 const migrationLockKey int64 = 0x0C0DED15
 
+// rebuildMarker opts a migration out of foreign-key enforcement while it runs.
+//
+// SQLite cannot change a CHECK constraint in place; the table is rebuilt (copy,
+// DROP, rename). With foreign keys on, DROP TABLE first deletes every row, and
+// that delete CASCADES: rebuilding `jobs` would delete every job's items, runs,
+// claims and params. PRAGMA foreign_keys is a no-op inside a transaction, so a
+// migration cannot switch it off itself; the runner does, before BEGIN, for a
+// script that carries this line. The keys are checked before COMMIT, so a
+// rebuild that broke a reference fails rather than committing.
+const rebuildMarker = "-- migrate: foreign keys off"
+
 func (s *Store) applyMigrationSQLite(ctx context.Context, name, script string) error {
 	// A dedicated connection: BEGIN IMMEDIATE / COMMIT are connection state, and
 	// database/sql gives no guarantee that two Exec calls land on the same
@@ -296,6 +307,16 @@ func (s *Store) applyMigrationSQLite(ctx context.Context, name, script string) e
 		return fmt.Errorf("acquire connection for %s: %w", name, err)
 	}
 	defer conn.Close()
+
+	rebuild := strings.Contains(script, rebuildMarker)
+	if rebuild {
+		if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+			return fmt.Errorf("foreign keys off for %s: %w", name, err)
+		}
+		defer func() {
+			_, _ = conn.ExecContext(context.WithoutCancel(ctx), `PRAGMA foreign_keys = ON`)
+		}()
+	}
 
 	// IMMEDIATE takes the write lock up front instead of deferring it to the
 	// first write, which is precisely the gap this bug lived in. A concurrent
@@ -323,6 +344,17 @@ func (s *Store) applyMigrationSQLite(ctx context.Context, name, script string) e
 
 	if _, err := conn.ExecContext(ctx, script); err != nil {
 		return fmt.Errorf("apply %s: %w", name, err)
+	}
+	if rebuild {
+		rows, err := conn.QueryContext(ctx, `PRAGMA foreign_key_check`)
+		if err != nil {
+			return fmt.Errorf("check foreign keys after %s: %w", name, err)
+		}
+		broken := rows.Next()
+		rows.Close()
+		if broken {
+			return fmt.Errorf("apply %s: it left rows referring to rows that no longer exist", name)
+		}
 	}
 	if _, err := conn.ExecContext(ctx,
 		`INSERT INTO schema_migrations (version) VALUES (?)`, name); err != nil {

@@ -21,8 +21,9 @@ import {
   defaultLayout, normalise, fromLegacy, paneSize as sizeOf,
   openPane as _open, closePane as _close, togglePane as _toggle,
   activatePane as _activate, movePane as _move, setPaneSize as _setSize,
+  floatPane as _float, dockPane as _dock, setFloatBounds as _setBounds, floatOf,
   slotOf, isOpen as _isOpen, visibleSlots as _visible,
-  type Layout, type SlotID,
+  type Bounds, type Floating, type Layout, type SlotID,
 } from './layout';
 import {
   loadUserBool, loadUserNum, loadUserObject, saveUserObject,
@@ -95,16 +96,27 @@ function persist(): void {
 // ── Operations. Apply, then save. ───────────────────────────────────────────
 
 export function openPane(id: string): void {
+  if (floatOf(state.current, id)) {
+    // Already on screen in its own window: bring that forward.
+    onFloatingToggled?.(id);
+    return;
+  }
   state.current = _open(state.current, id);
   persist();
 }
 
 export function closePane(id: string): void {
+  const wasFloating = !!floatOf(state.current, id);
   state.current = _close(state.current, id);
   persist();
+  if (wasFloating) onDocked?.(id);
 }
 
 export function togglePane(id: string): void {
+  if (floatOf(state.current, id)) {
+    onFloatingToggled?.(id);
+    return;
+  }
   state.current = _toggle(state.current, id);
   persist();
 }
@@ -115,8 +127,66 @@ export function activatePane(id: string): void {
 }
 
 export function movePane(id: string, to: SlotID, index?: number): void {
+  const wasFloating = !!floatOf(state.current, id);
   state.current = _move(state.current, id, to, index);
   persist();
+  if (wasFloating) onDocked?.(id);
+}
+
+// ── Popped-out panes ────────────────────────────────────────────────────────
+//
+// The windows themselves are popout.svelte.ts's business; this file only keeps
+// the layout and tells it, through the two hooks below, when the layout changed
+// in a way a window has to follow. Hooks rather than an import, so the layout
+// does not depend on the window code.
+
+let onDocked: ((id: string) => void) | undefined;
+let onFloatingToggled: ((id: string) => void) | undefined;
+
+/** setFloatingHooks is called once by the window code. `docked`: a pane left
+ *  its window (for a slot, or closed), so the window should close. `toggled`: its toolbar
+ *  button was pressed, so its window should come forward. */
+export function setFloatingHooks(docked: (id: string) => void, toggled: (id: string) => void): void {
+  onDocked = docked;
+  onFloatingToggled = toggled;
+}
+
+export function floatPane(id: string, bounds?: Partial<Bounds>): void {
+  state.current = _float(state.current, id, bounds);
+  persist();
+}
+
+/** dockPane puts a popped-out pane back in a slot. The window is closed by the
+ *  caller, which is why this does not fire the docked hook. */
+export function dockPane(id: string, to?: SlotID, index?: number): void {
+  state.current = _dock(state.current, id, to, index);
+  persist();
+}
+
+let boundsTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** setFloatBounds records a window's size and position. Saved on a delay, as
+ *  sizes are: a window being dragged reports many times a second. */
+export function setFloatBounds(id: string, bounds: Partial<Bounds>): void {
+  const next = _setBounds(state.current, id, bounds);
+  if (next === state.current) return;
+  state.current = next;
+  clearTimeout(boundsTimer);
+  boundsTimer = setTimeout(persist, 800);
+}
+
+export function floatingPanes(): Floating[] {
+  return state.current.floating;
+}
+
+export function isPaneFloating(id: string): boolean {
+  return !!floatOf(state.current, id);
+}
+
+/** True once the stored layout has loaded; a popped-out window that is
+ *  restored before then would be restored from the default layout. */
+export function layoutLoaded(): boolean {
+  return loaded;
 }
 
 /** resetLayout is the escape hatch from an arrangement you cannot undo.
@@ -127,8 +197,11 @@ export function movePane(id: string, to: SlotID, index?: number): void {
  *  the long-standing default before panes existed — DRAWER_KEY defaulted true.
  */
 export function resetLayout(): void {
+  const windows = state.current.floating.map((f) => f.pane);
   state.current = _open(defaultLayout(), 'tree');
   persist();
+  // Popped-out windows are part of the arrangement being reset.
+  for (const id of windows) onDocked?.(id);
 }
 
 // ── Reads ───────────────────────────────────────────────────────────────────
@@ -179,6 +252,12 @@ export function beginDrag(id: string): void {
 export function endDrag(): void {
   drag.pane = null;
 }
+
+/** The value draggingPane() takes while a tab from ANOTHER window is over this
+ *  one. Which pane it is cannot be read until the drop (browsers hide drag
+ *  data until then), but the drop targets only need to know that one is
+ *  coming; the drop reads the real id from dataTransfer. */
+export const EXTERNAL_DRAG = '\u0000external';
 
 // ── Resizing ────────────────────────────────────────────────────────────────
 

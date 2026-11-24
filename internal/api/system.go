@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"codedistill/internal/domain"
 	"codedistill/internal/features"
 )
 
@@ -112,7 +113,7 @@ type systemModels struct {
 // If a member ever legitimately needs the version or the edition, that is a
 // small public subset to split out — not a reason to leave the paths open.
 func (s *Server) systemInfo(w http.ResponseWriter, r *http.Request) {
-	if !s.isAdmin(r) {
+	if !s.can(r, domain.PermAdminister) {
 		writeMsg(w, http.StatusForbidden, "system details are available to workspace owners and admins")
 		return
 	}

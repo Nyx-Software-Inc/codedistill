@@ -177,8 +177,9 @@ func TestPauseIsRefusedForANonResumableWorkflow(t *testing.T) {
 		t.Fatalf("status = %q; a refused pause must leave the run alone", got.Status)
 	}
 
-	// Decompose declares itself resumable, so it pauses.
-	seedJobFor(t, store, "j2", "p1", domain.JobDecompose, domain.JobRunning, 1, 5)
+	// A workflow that declares it can pause and resume, pauses. Fixing
+	// findings does; splitting a document no longer claims to (0091).
+	seedJobFor(t, store, "j2", "p1", domain.JobFixFindings, domain.JobRunning, 1, 5)
 	var out map[string]any
 	doJSON(t, srv, "POST", "/api/v1/jobs/j2/pause", nil, 200, &out)
 	if out["status"] != domain.JobPaused {

@@ -238,7 +238,7 @@ func (s *Server) draftArchitectureByDir(w http.ResponseWriter, r *http.Request, 
 	// restart. Explicit redraft is the exception: restartArchJob (below)
 	// supersedes the running job and starts a fresh one for the new graph.
 	if !redraft {
-		if j := s.archJobFor(ctx, pid); j != nil && j.Active() {
+		if j := s.archJobFor(ctx, pid); j != nil && j.Pending() {
 			s.writeArchitecture(w, r, pid)
 			return
 		}
@@ -252,7 +252,7 @@ func (s *Server) draftArchitectureByDir(w http.ResponseWriter, r *http.Request, 
 		if nodes, err := s.store.ListArchitectureNodes(ctx, pid); err == nil && len(nodes) > 0 {
 			for _, n := range nodes {
 				if n.Provenance == "proposed" && n.Description == "" && n.Area != "" && inArchScope(n.Area, scope) {
-					s.startArchJob(ctx, pid, comps, scope)
+					s.startArchJob(ctx, pid, scope)
 					break
 				}
 			}
@@ -292,7 +292,7 @@ func (s *Server) draftArchitectureByDir(w http.ResponseWriter, r *http.Request, 
 	// restartArchJob (not startArchJob): this path just deleted+recreated the
 	// proposed graph, so any job still running on the OLD node IDs must be
 	// superseded and the NEW skeleton enriched (bug 100 redraft race).
-	s.restartArchJob(ctx, pid, comps, scope)
+	s.restartArchJob(ctx, pid, scope)
 	s.writeArchitecture(w, r, pid)
 }
 

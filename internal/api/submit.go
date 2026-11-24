@@ -46,7 +46,12 @@ type submitRequest struct {
 	WorkflowID string            `json:"workflow_id"`
 	ProjectID  string            `json:"project_id"`
 	Params     map[string]string `json:"params"`
+	// Priority orders the job in the queue: low, medium (default) or high.
+	Priority string `json:"priority"`
 }
+
+// decomposeCallTimeout bounds one model call of a decompose or ordering run.
+const decomposeCallTimeout = decompose.MaxCallTimeout + time.Minute
 
 func (s *Server) submitJob(w http.ResponseWriter, r *http.Request) {
 	var req submitRequest
@@ -75,6 +80,11 @@ func (s *Server) submitJob(w http.ResponseWriter, r *http.Request) {
 	// Validated against the DECLARATION before anything is created. A job row
 	// that exists, starts, and dies on a blank argument reads to the user as a
 	// broken workflow; refusing the submission says which field to fix.
+	priority, err := s.submitPriority(r, wf, req.Priority)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "field": "priority"})
+		return
+	}
 	params, err := domain.ValidateParams(wf.Params, req.Params)
 	if err != nil {
 		var pe *domain.ParamError
@@ -90,11 +100,11 @@ func (s *Server) submitJob(w http.ResponseWriter, r *http.Request) {
 
 	switch wf.ID {
 	case domain.JobDecompose:
-		s.submitDecompose(w, r, req.ProjectID, params)
+		s.submitDecompose(w, r, req.ProjectID, params, priority)
 	case domain.JobSequence:
-		s.submitSequence(w, r, req.ProjectID, params)
+		s.submitSequence(w, r, req.ProjectID, params, priority)
 	case domain.JobFixFindings:
-		s.submitFixFindings(w, r, req.ProjectID, params)
+		s.submitFixFindings(w, r, req.ProjectID, params, priority)
 	case domain.JobArchDraft:
 		// Architecture drafting owns its own launch path: it derives its work
 		// from the repository tree, which has to be walked before there is
@@ -128,7 +138,7 @@ func asParamError(err error, out **domain.ParamError) bool {
 // and a path would be read on the server — which is only the same machine by
 // accident. Both honest routes in (drop, upload) already make the document an
 // item, so that is what this takes.
-func (s *Server) submitDecompose(w http.ResponseWriter, r *http.Request, projectID string, params map[string]string) {
+func (s *Server) submitDecompose(w http.ResponseWriter, r *http.Request, projectID string, params map[string]string, priority string) {
 	itemID := params["source_item"]
 	item, err := s.store.GetScratchpadItem(r.Context(), itemID)
 	// A document that has been deleted since the dialog listed it is a BAD
@@ -173,7 +183,7 @@ func (s *Server) submitDecompose(w http.ResponseWriter, r *http.Request, project
 
 	// Which model reads the document is the STEP's choice, then the worker's.
 	gen, prov, err := StepClient(r.Context(), s.store, domain.JobDecompose, 0,
-		domain.WorkerDecomposer, projectID, decompose.MaxCallTimeout+time.Minute)
+		domain.WorkerDecomposer, projectID, decomposeCallTimeout)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -200,36 +210,22 @@ func (s *Server) submitDecompose(w http.ResponseWriter, r *http.Request, project
 		}
 	}
 
-	jobID := id.New()
-	runCtx, cancel := context.WithCancel(context.Background())
-	s.trackJob(jobID, cancel)
-
-	go func() {
-		defer s.untrackJob(jobID)
-		_, err := jobrun.RunDecompose(runCtx, s.store, jobrun.DecomposeInput{
-			ProjectID: projectID, ScratchpadID: item.ScratchpadID,
-			SourceItemID: item.ID, Label: label,
-			Lines: src.Lines, SourceHash: hash, Format: src.Format,
-			Again: again, Gen: gen, JobID: jobID, NewID: id.New,
-			OnJobCreated: func(j *domain.Job) {
-				// Kept with the run rather than reconstructed from the
-				// workflow: a definition can be edited afterwards, and history
-				// that reports today's declaration instead of what was actually
-				// submitted is a quiet lie about what happened.
-				if err := s.store.SaveJobParams(runCtx, j.ID, params); err != nil {
-					s.log.Warn("could not record job params", "job", j.ID, "err", err)
-				}
-			},
-		}, nil)
-		if err != nil {
-			// The job row already carries the failure; this is for the log.
-			s.log.Warn("decompose run failed", "job", jobID, "err", err)
-		}
-	}()
+	// Queued, with what was asked for. The parameters are kept with the run
+	// rather than reconstructed from the workflow: a definition can be edited
+	// afterwards, and history that reports today's declaration instead of what
+	// was actually submitted is a quiet lie about what happened.
+	j := &domain.Job{ID: id.New(), ProjectID: projectID, Type: domain.JobDecompose,
+		ScopeKind: "scratchpad_item", ScopeID: item.ID, ScopeLabel: label,
+		CreatedBy: s.currentUser(r), Priority: priority}
+	place, err := s.enqueueJob(r.Context(), j, params)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
 
 	resp := map[string]any{
-		"job_id": jobID, "label": label, "lines": len(src.Lines),
-		"model": gen.Model(),
+		"job_id": j.ID, "label": label, "lines": len(src.Lines),
+		"model": gen.Model(), "queue": place,
 	}
 	if prov != nil {
 		resp["provider"] = prov.Name
@@ -287,12 +283,62 @@ func (s *Server) documentFromItem(ctx context.Context, item *domain.ScratchpadIt
 	return src, label, err
 }
 
+// decomposeNow runs a decomposition that has left the queue.
+func (s *Server) decomposeNow(ctx context.Context, j *domain.Job, item *domain.ScratchpadItem, src *decompose.Source,
+	label string, gen decompose.Generator, again bool) error {
+	_, err := jobrun.RunDecompose(ctx, s.store, jobrun.DecomposeInput{
+		ProjectID: j.ProjectID, ScratchpadID: item.ScratchpadID,
+		SourceItemID: item.ID, Label: label,
+		Lines: src.Lines, SourceHash: decompose.HashLines(src.Lines), Format: src.Format,
+		Again: again, Gen: gen, JobID: j.ID, NewID: id.New,
+	}, nil)
+	if err != nil {
+		// The job row already carries the failure; this is for the log.
+		s.log.Warn("decompose run failed", "job", j.ID, "err", err)
+	}
+	return nil
+}
+
+// sequenceNow orders a scratchpad's work items, read as they are now.
+func (s *Server) sequenceNow(ctx context.Context, j *domain.Job, sp *domain.Scratchpad) error {
+	useCases, _ := s.store.ListUseCaseItemsByScratchpad(ctx, sp.ID)
+	todos, _ := s.store.ListTodoItemsByScratchpad(ctx, sp.ID)
+	bugs, _ := s.store.ListBugItemsByScratchpad(ctx, sp.ID)
+	items, kinds := jobrun.SeqItemsFrom(useCases, todos, bugs)
+	if len(items) < 2 {
+		return fmt.Errorf("there is nothing to order — the scratchpad holds fewer than two work items now")
+	}
+	gen, _, err := StepClient(ctx, s.store, domain.JobSequence, 0,
+		domain.WorkerDecomposer, j.ProjectID, decomposeCallTimeout)
+	if err != nil {
+		return err
+	}
+	if gen == nil {
+		return fmt.Errorf("no model is configured for this workflow — choose one in Settings › Workflows")
+	}
+	res, err := jobrun.RunSequence(ctx, s.store, jobrun.SequenceInput{
+		ProjectID: j.ProjectID, ScopeKind: "scratchpad", ScopeID: sp.ID,
+		ScopeLabel: sp.Name, Items: items, Kinds: kinds,
+		Gen: gen, JobID: j.ID, NewID: id.New, UserID: j.CreatedBy,
+	})
+	if err != nil {
+		s.log.Warn("sequence run failed", "job", j.ID, "err", err)
+		return nil
+	}
+	// Logged, because the discarded counts are the honest measure of the
+	// sweep: edges naming items that do not exist say the model is not to
+	// be trusted, and "2 proposed" alone hides that entirely.
+	s.log.Info("sequence complete", "job", j.ID, "items", len(items),
+		"proposed", res.Proposed, "discarded", res.Rejected, "already_known", res.Known)
+	return nil
+}
+
 // submitSequence orders the work on a scratchpad.
 //
 // Reads all four kinds together rather than one at a time: dependencies cross
 // kinds, and a bug blocking a use case is exactly the edge a per-kind sweep
 // could never see.
-func (s *Server) submitSequence(w http.ResponseWriter, r *http.Request, projectID string, params map[string]string) {
+func (s *Server) submitSequence(w http.ResponseWriter, r *http.Request, projectID string, params map[string]string, priority string) {
 	spID := params["scratchpad"]
 	sp, err := s.store.GetScratchpad(r.Context(), spID)
 	if err != nil || sp == nil {
@@ -305,7 +351,7 @@ func (s *Server) submitSequence(w http.ResponseWriter, r *http.Request, projectI
 	todos, _ := s.store.ListTodoItemsByScratchpad(r.Context(), spID)
 	bugs, _ := s.store.ListBugItemsByScratchpad(r.Context(), spID)
 
-	items, kinds := jobrun.SeqItemsFrom(useCases, todos, bugs)
+	items, _ := jobrun.SeqItemsFrom(useCases, todos, bugs)
 	if len(items) < 2 {
 		// Refused here rather than started and finished instantly: a job that
 		// succeeds having done nothing is worse than a message saying why.
@@ -317,7 +363,7 @@ func (s *Server) submitSequence(w http.ResponseWriter, r *http.Request, projectI
 	}
 
 	gen, prov, err := StepClient(r.Context(), s.store, domain.JobSequence, 0,
-		domain.WorkerDecomposer, projectID, decompose.MaxCallTimeout+time.Minute)
+		domain.WorkerDecomposer, projectID, decomposeCallTimeout)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -328,29 +374,16 @@ func (s *Server) submitSequence(w http.ResponseWriter, r *http.Request, projectI
 		return
 	}
 
-	jobID := id.New()
-	runCtx, cancel := context.WithCancel(context.Background())
-	s.trackJob(jobID, cancel)
+	j := &domain.Job{ID: id.New(), ProjectID: projectID, Type: domain.JobSequence,
+		ScopeKind: "scratchpad", ScopeID: spID, ScopeLabel: sp.Name,
+		CreatedBy: s.currentUser(r), Priority: priority}
+	place, err := s.enqueueJob(r.Context(), j, params)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
 
-	go func() {
-		defer s.untrackJob(jobID)
-		res, err := jobrun.RunSequence(runCtx, s.store, jobrun.SequenceInput{
-			ProjectID: projectID, ScopeKind: "scratchpad", ScopeID: spID,
-			ScopeLabel: sp.Name, Items: items, Kinds: kinds,
-			Gen: gen, JobID: jobID, NewID: id.New, UserID: s.currentUser(r),
-		})
-		if err != nil {
-			s.log.Warn("sequence run failed", "job", jobID, "err", err)
-			return
-		}
-		// Logged, because the discarded counts are the honest measure of the
-		// sweep: edges naming items that do not exist say the model is not to
-		// be trusted, and "2 proposed" alone hides that entirely.
-		s.log.Info("sequence complete", "job", jobID, "items", len(items),
-			"proposed", res.Proposed, "discarded", res.Rejected, "already_known", res.Known)
-	}()
-
-	resp := map[string]any{"job_id": jobID, "items": len(items), "model": gen.Model()}
+	resp := map[string]any{"job_id": j.ID, "items": len(items), "model": gen.Model(), "queue": place}
 	if prov != nil {
 		resp["provider"] = prov.Name
 		resp["leaves_machine"] = !prov.IsLocal

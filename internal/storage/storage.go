@@ -28,6 +28,11 @@ import (
 // ErrNotFound is returned by Get* and Delete* methods when the target row is missing.
 var ErrNotFound = errors.New("not found")
 
+// ErrJobNotStarting is CreateJob's answer for a job the queue no longer has
+// running: it was cancelled in the moment between leaving the line and its
+// runner starting. The runner must stop, not resurrect it.
+var ErrJobNotStarting = errors.New("the job is no longer starting: it was cancelled or finished")
+
 // ErrDuplicate is returned by Create* / Update* methods when a UNIQUE
 // constraint violation occurs (today: workspace name, project name within
 // a workspace, scratchpad name within a project, codebase name within a
@@ -143,6 +148,15 @@ type Storage interface {
 	SetWorkspaceMemberStatus(ctx context.Context, workspaceID, userID, status string) error
 	SetWorkspaceMemberRole(ctx context.Context, workspaceID, userID, role string) error
 	CountActiveWorkspaceMembers(ctx context.Context, workspaceID string) (int, error)
+	// Roles and permissions (docs/design/workflows-and-roles.md, Part 2).
+	ListRoles(ctx context.Context) ([]*domain.Role, error)
+	SaveRole(ctx context.Context, r *domain.Role) error
+	DeleteRole(ctx context.Context, id string) error
+	MemberRoles(ctx context.Context, workspaceID, userID string) ([]string, error)
+	MemberPermissions(ctx context.Context, workspaceID, userID string) (domain.PermSet, error)
+	SetMemberRoles(ctx context.Context, workspaceID, userID string, roles []string, seats int) (bool, error)
+	CountSeatsTaken(ctx context.Context, workspaceID string) (int, error)
+	CountActiveOwners(ctx context.Context, workspaceID string) (int, error)
 
 	AddProjectMember(ctx context.Context, m *domain.ProjectMember) error
 	RemoveProjectMember(ctx context.Context, projectID, userID string) error
@@ -331,6 +345,15 @@ type Storage interface {
 	LatestJobFor(ctx context.Context, jobType, scopeKind, scopeID string) (*domain.Job, error)
 	ListJobs(ctx context.Context, projectID string, statuses []string, limit int) ([]*domain.Job, error)
 	InterruptStaleJobs(ctx context.Context, at time.Time) (int, error)
+	// The job queue (docs/design/job-queue.md).
+	ListQueuedJobs(ctx context.Context) ([]*domain.Job, error)
+	CountRunningJobs(ctx context.Context) (int, error)
+	StartQueuedJob(ctx context.Context, id string, at time.Time) (bool, error)
+	SetJobPriority(ctx context.Context, id, priority string, at time.Time) (bool, error)
+	ListRunningJobs(ctx context.Context) ([]*domain.Job, error)
+	PauseJob(ctx context.Context, id, by string, at time.Time) (bool, error)
+	RequeueJob(ctx context.Context, id, by string, at time.Time) (bool, error)
+	RequeueRunningJobs(ctx context.Context, types []string, at time.Time) (int, error)
 
 	// Per-phase timing: where a run spent its time, and what a phase usually
 	// costs. See internal/storage/sqlite/job_phases.go.
@@ -345,6 +368,7 @@ type Storage interface {
 	CreateJobItem(ctx context.Context, it *domain.JobItem) error
 	UpdateJobItem(ctx context.Context, it *domain.JobItem) error
 	ListJobItems(ctx context.Context, jobID string) ([]*domain.JobItem, error)
+	ResetJobItem(ctx context.Context, id string) error
 	RunningJobItem(ctx context.Context, jobID string) (*domain.JobItem, error)
 	TouchJobItemProgress(ctx context.Context, jobID, note string, at time.Time) (bool, error)
 	// Claims an agent made, each challenger lens's verdicts on them, and what

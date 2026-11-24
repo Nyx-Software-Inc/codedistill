@@ -23,97 +23,43 @@
   import SecurityKnowledgeSettings from './SecurityKnowledgeSettings.svelte';
   import AgentSettings from './AgentSettings.svelte';
 
+  import { can } from '../lib/session.svelte';
+
   type Section = 'appearance' | 'indexing' | 'input' | 'canvas' | 'models' | 'workflows' | 'agents' | 'security' | 'mcp' | 'server';
 
   type Props = { userId: string; /** The section to open on. */ initial?: Section };
   let { userId, initial = 'appearance' }: Props = $props();
 
+  // Each section and who may open it. Personal ones are everyone's; the rest
+  // change the installation or its workflows, and show only to those whose
+  // role allows it (the server refuses the change regardless).
+  const SECTIONS: { id: Section; label: string; allowed: () => boolean }[] = [
+    { id: 'appearance', label: 'Appearance', allowed: () => true },
+    { id: 'input', label: 'Input', allowed: () => true },
+    { id: 'canvas', label: 'Canvas', allowed: () => true },
+    { id: 'indexing', label: 'Indexing', allowed: () => can('administer') },
+    { id: 'models', label: 'Models', allowed: () => can('administer') },
+    { id: 'workflows', label: 'Workflows', allowed: () => can('design_workflows') },
+    { id: 'agents', label: 'Agents', allowed: () => can('administer') || can('design_workflows') },
+    { id: 'security', label: 'Security knowledge', allowed: () => can('administer') },
+    { id: 'mcp', label: 'MCP Export', allowed: () => can('administer') },
+    { id: 'server', label: 'Server access', allowed: () => can('administer') },
+  ];
+  const shown = $derived(SECTIONS.filter((x) => x.allowed()));
+
   let active = $state<Section>('appearance');
-  $effect(() => { active = initial; });
+  $effect(() => {
+    active = shown.some((x) => x.id === initial) ? initial : (shown[0]?.id ?? 'appearance');
+  });
 </script>
 
 <div class="settings-shell">
   <nav class="settings-nav" aria-label="Settings sections">
-    <button
-      type="button"
-      class="nav-item"
-      class:active={active === 'appearance'}
-      onclick={() => (active = 'appearance')}
-    >
-      Appearance
-    </button>
-    <button
-      type="button"
-      class="nav-item"
-      class:active={active === 'indexing'}
-      onclick={() => (active = 'indexing')}
-    >
-      Indexing
-    </button>
-    <button
-      type="button"
-      class="nav-item"
-      class:active={active === 'input'}
-      onclick={() => (active = 'input')}
-    >
-      Input
-    </button>
-    <button
-      type="button"
-      class="nav-item"
-      class:active={active === 'canvas'}
-      onclick={() => (active = 'canvas')}
-    >
-      Canvas
-    </button>
-    <button
-      type="button"
-      class="nav-item"
-      class:active={active === 'models'}
-      onclick={() => (active = 'models')}
-    >
-      Models
-    </button>
-    <button
-      type="button"
-      class="nav-item"
-      class:active={active === 'workflows'}
-      onclick={() => (active = 'workflows')}
-    >
-      Workflows
-    </button>
-    <button
-      type="button"
-      class="nav-item"
-      class:active={active === 'agents'}
-      onclick={() => (active = 'agents')}
-    >
-      Agents
-    </button>
-    <button
-      type="button"
-      class="nav-item"
-      class:active={active === 'security'}
-      onclick={() => (active = 'security')}
-    >
-      Security knowledge
-    </button>
-    <button
-      type="button"
-      class="nav-item"
-      class:active={active === 'mcp'}
-      onclick={() => (active = 'mcp')}
-    >
-      MCP Export
-    </button>
-    <button
-      type="button"
-      class="nav-item"
-      class:active={active === 'server'}
-      onclick={() => (active = 'server')}
-    >
-      Server access
-    </button>
+    {#each shown as x (x.id)}
+      <button type="button" class="nav-item" class:active={active === x.id} onclick={() => (active = x.id)}>
+        {x.label}
+      </button>
+    {/each}
   </nav>
   <div class="settings-content">
     {#if active === 'appearance'}

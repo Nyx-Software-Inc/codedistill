@@ -69,6 +69,9 @@ func (s *Server) createCodebase(w http.ResponseWriter, r *http.Request) {
 		writeMsg(w, http.StatusBadRequest, "name and repo_root are required")
 		return
 	}
+	if !s.allowRepoPath(w, r) {
+		return
+	}
 	cb := &domain.Codebase{
 		ID:        id.New(),
 		ProjectID: pid,
@@ -113,6 +116,9 @@ func (s *Server) updateCodebase(w http.ResponseWriter, r *http.Request) {
 	if req.RepoRoot != nil {
 		if *req.RepoRoot == "" {
 			writeMsg(w, http.StatusBadRequest, "repo_root cannot be empty")
+			return
+		}
+		if *req.RepoRoot != cb.RepoRoot && !s.allowRepoPath(w, r) {
 			return
 		}
 		cb.RepoRoot = *req.RepoRoot

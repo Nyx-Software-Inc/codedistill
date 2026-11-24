@@ -13,7 +13,7 @@
 
 <script lang="ts">
   import * as api from '../lib/api';
-  import type { AgentsStatus } from '../lib/api';
+  import type { AgentsStatus, JobSlots } from '../lib/api';
 
   // Settings → Agents: what runs each agent role, and whether it can. A role
   // runs on the model chosen for it (Settings → Workflows), through that
@@ -28,11 +28,16 @@
   let error = $state('');
   let note = $state('');
   let steps = $state('');
+  let slots = $state<JobSlots | null>(null);
+  let slotCount = $state('');
+  let aging = $state('');
 
   async function load() {
     try {
-      st = await api.agentsStatus();
+      [st, slots] = await Promise.all([api.agentsStatus(), api.getJobSlots()]);
       steps = String(st.step_limit ?? 100);
+      slotCount = String(slots.slots);
+      aging = String(slots.aging_hours);
       error = '';
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
@@ -51,6 +56,54 @@
       note = `Each run of CodeDistill's agent now stops after ${n} turns.`;
       error = '';
       setTimeout(() => (note = ''), 4000);
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  function flash(msg: string) {
+    note = msg;
+    error = '';
+    setTimeout(() => { if (note === msg) note = ''; }, 4000);
+  }
+
+  // Job slots are the whole installation's, not this project's: every
+  // project's jobs share them (docs/design/job-queue.md).
+  async function saveSlots() {
+    const n = Number(slotCount);
+    if (!Number.isInteger(n) || n < 1) {
+      error = 'Job slots are a whole number, 1 or more.';
+      return;
+    }
+    try {
+      await api.setUserSetting(userId, 'jobs.slots', n);
+      slots = await api.getJobSlots();
+      flash(`Up to ${n} job${n === 1 ? '' : 's'} now run at once, across every project.`);
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  async function useSuggestion() {
+    try {
+      await api.deleteUserSetting(userId, 'jobs.slots');
+      slots = await api.getJobSlots();
+      slotCount = String(slots.slots);
+      flash(`Job slots follow this machine's suggestion: ${slots.suggested}.`);
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  async function saveAging() {
+    const n = Number(aging);
+    if (!Number.isInteger(n) || n < 1) {
+      error = 'The wait before a job moves up is a whole number of hours, 1 or more.';
+      return;
+    }
+    try {
+      await api.setUserSetting(userId, 'jobs.aging_hours', n);
+      flash(`A waiting job now moves up a priority level every ${n} hour${n === 1 ? '' : 's'}.`);
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     }
@@ -118,6 +171,38 @@
       <p class="help">A job will not start while a role it needs cannot run.</p>
     {/if}
 
+    {#if slots}
+      <h4>Job slots</h4>
+      <div class="acts">
+        <label class="field">
+          Jobs at once
+          <input type="number" min="1" step="1" bind:value={slotCount} onchange={saveSlots} />
+        </label>
+        {#if slots.configured != null && slots.configured !== slots.suggested}
+          <button class="link" onclick={useSuggestion}>Use this machine's suggestion ({slots.suggested})</button>
+        {/if}
+      </div>
+      <p class="help">
+        How many jobs run at the same time, shared by every project. A job started while they are all busy
+        waits its turn, highest priority first. This machine suggests {slots.suggested}
+        ({Math.round(slots.memory_gb)} GB of memory, {slots.cores} cores: one per 8 GB and per 4 cores).
+      </p>
+      {#if Number(slotCount) > slots.suggested}
+        <p class="help warn">More than this machine suggests: jobs may slow each other down, and runs may time out.</p>
+      {/if}
+      <div class="acts">
+        <label class="field">
+          Move a waiting job up every
+          <input type="number" min="1" step="1" bind:value={aging} onchange={saveAging} />
+          hours
+        </label>
+      </div>
+      <p class="help">
+        A job that has waited this long moves up one priority level, so a steady stream of high-priority
+        jobs cannot hold a low one back forever.
+      </p>
+    {/if}
+
     <h4>Limits</h4>
     <div class="acts">
       <label class="field">
@@ -138,6 +223,8 @@
   h4 { margin: 0.4rem 0 0; font-size: 0.85rem; font-weight: 600; }
   .intro, .help { margin: 0; font-size: 0.85rem; color: var(--text-dim); max-width: 46rem; }
   .help { font-size: 0.78rem; }
+  .help.warn { color: var(--warn, #e0a030); }
+  .link { background: none; border: 0; padding: 0; color: var(--accent); font: inherit; font-size: 0.8rem; cursor: pointer; }
   .err { color: var(--danger, #f88); font-size: 0.85rem; margin: 0; }
   .ok { color: var(--ok, #4caf72); font-size: 0.85rem; margin: 0; }
   table { border-collapse: collapse; font-size: 0.82rem; max-width: 46rem; }

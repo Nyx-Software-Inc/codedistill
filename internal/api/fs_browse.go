@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strings"
 
+	"codedistill/internal/domain"
 	"codedistill/internal/features"
 )
 
@@ -84,7 +85,7 @@ func (s *Server) fsBrowse(w http.ResponseWriter, r *http.Request) {
 	}
 	// Single-user, but with SSO configured: admins only. Someone has taken the
 	// trouble to put identity in front of this install.
-	if s.auth != nil && !s.isAdmin(r) {
+	if !s.can(r, domain.PermAdminister) {
 		writeMsg(w, http.StatusForbidden, "filesystem browsing requires an admin")
 		return
 	}

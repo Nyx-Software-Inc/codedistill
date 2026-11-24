@@ -87,3 +87,67 @@ func TestEnlargeSavedWindow(t *testing.T) {
 		t.Errorf("devtools was changed: %s", s)
 	}
 }
+
+func TestAllowPaneWindows(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	read := func(path string) map[string]any {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(b, &m); err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	rule := func(m map[string]any, kind string) any {
+		p, _ := m["profile"].(map[string]any)
+		cs, _ := p["content_settings"].(map[string]any)
+		ex, _ := cs["exceptions"].(map[string]any)
+		k, _ := ex[kind].(map[string]any)
+		r, _ := k["http://127.0.0.1:8080,*"].(map[string]any)
+		return r["setting"]
+	}
+
+	t.Run("before the first launch", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "Default", "Preferences")
+		allowPaneWindows(path, "http://127.0.0.1:8080", log)
+		m := read(path)
+		for _, kind := range []string{"popups", "window_placement"} {
+			if rule(m, kind) != float64(1) {
+				t.Errorf("%s not allowed: %v", kind, m)
+			}
+		}
+	})
+
+	t.Run("keeps everything else", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "Preferences")
+		in := `{"browser":{"x":1},"profile":{"name":"CD","content_settings":{"exceptions":{"popups":{"https://other,*":{"setting":2}}}}}}`
+		if err := os.WriteFile(path, []byte(in), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		allowPaneWindows(path, "http://127.0.0.1:8080", log)
+		m := read(path)
+		if rule(m, "popups") != float64(1) {
+			t.Error("popups not allowed")
+		}
+		s, _ := json.Marshal(m)
+		for _, want := range []string{`"browser":{"x":1}`, `"name":"CD"`, `"https://other,*":{"setting":2}`} {
+			if !strings.Contains(string(s), want) {
+				t.Errorf("lost %s: %s", want, s)
+			}
+		}
+	})
+
+	t.Run("leaves a file it cannot read alone", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "Preferences")
+		if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		allowPaneWindows(path, "http://127.0.0.1:8080", log)
+		if b, _ := os.ReadFile(path); string(b) != "{not json" {
+			t.Errorf("rewrote it: %s", b)
+		}
+	})
+}

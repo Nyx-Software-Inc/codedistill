@@ -17,6 +17,7 @@ package agentloop
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -327,5 +328,27 @@ func TestRunNudgesAfterAFailedCall(t *testing.T) {
 	}
 	if res.Turns != 4 || res.Text != "Done." || m.seen[2].Messages[len(m.seen[2].Messages)-1].Text != nudge {
 		t.Fatalf("result = %+v", res)
+	}
+}
+
+// Each turn's running totals are reported as the run goes, not only at the end.
+func TestRunReportsUsageEachTurn(t *testing.T) {
+	m := &script{turns: []ollama.ChatResponse{
+		{ToolCalls: []ollama.ToolCall{call("a", "list_files", `{"pattern":"*.go"}`)}, Usage: ollama.ChatUsage{In: 100, Out: 10, CacheRead: 5}},
+		{Text: "done", Usage: ollama.ChatUsage{In: 120, Out: 7, CacheWrite: 2}},
+	}}
+	var seen []string
+	res, err := Run(context.Background(), Config{Dir: checkout(t), Brief: "look", Model: m,
+		OnTurn: func(turns int, u ollama.ChatUsage) {
+			seen = append(seen, fmt.Sprintf("%d:%d/%d/%d/%d", turns, u.In, u.Out, u.CacheRead, u.CacheWrite))
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(seen, " ") != "1:100/10/5/0 2:220/17/5/2" {
+		t.Fatalf("reported %v", seen)
+	}
+	if res.Usage != (ollama.ChatUsage{In: 220, Out: 17, CacheRead: 5, CacheWrite: 2}) {
+		t.Fatalf("final usage = %+v", res.Usage)
 	}
 }

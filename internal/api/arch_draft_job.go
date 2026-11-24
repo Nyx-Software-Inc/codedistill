@@ -77,7 +77,9 @@ func archStatusOf(j *domain.Job, now time.Time) *archJobStatus {
 		return nil
 	}
 	st := &archJobStatus{
-		Running: j.Active(), Total: j.Total, Done: j.Done,
+		// Waiting in the job queue counts: the draft is on its way, and the
+		// panel must not offer to start a second one.
+		Running: j.Pending(), Total: j.Total, Done: j.Done,
 		Scope: j.ScopeLabel, Error: j.Error,
 	}
 	if st.Running {
@@ -116,11 +118,11 @@ func (s *Server) currentArchRun(pid string) *archRun {
 // startArchJob launches enrichment unless a run is already going. scope narrows
 // to one top-level directory ("characterize this first"); "" enriches
 // everything pending.
-func (s *Server) startArchJob(ctx context.Context, pid string, comps []component, scope string) *domain.Job {
+func (s *Server) startArchJob(ctx context.Context, pid string, scope string) *domain.Job {
 	if existing, err := s.store.ActiveJobFor(ctx, domain.JobArchDraft, archScopeKind, pid); err == nil && existing != nil {
 		return existing
 	}
-	return s.launchArchJob(ctx, pid, comps, scope, false)
+	return s.launchArchJob(ctx, pid, scope, false)
 }
 
 // restartArchJob supersedes any running enrichment and starts a fresh one. Used
@@ -131,37 +133,38 @@ func (s *Server) startArchJob(ctx context.Context, pid string, comps []component
 // un-enriched — the redraft race in bug 100. Replacing the run record also
 // makes the old job non-current, which runArchEnrichment checks before each
 // writeback.
-func (s *Server) restartArchJob(ctx context.Context, pid string, comps []component, scope string) *domain.Job {
-	return s.launchArchJob(ctx, pid, comps, scope, true)
+func (s *Server) restartArchJob(ctx context.Context, pid string, scope string) *domain.Job {
+	return s.launchArchJob(ctx, pid, scope, true)
 }
 
-func (s *Server) launchArchJob(ctx context.Context, pid string, comps []component, scope string, supersede bool) *domain.Job {
-	now := time.Now().UTC()
+// launchArchJob queues an enrichment run; runArchDraft (job_queue.go) starts
+// it, finding the components as the repository is then.
+func (s *Server) launchArchJob(ctx context.Context, pid string, scope string, supersede bool) *domain.Job {
+	if supersede {
+		// One still waiting in line never ran: it simply goes.
+		if prev, err := s.store.ActiveJobFor(ctx, domain.JobArchDraft, archScopeKind, pid); err == nil &&
+			prev != nil && prev.Status == domain.JobQueued {
+			_ = s.store.FinishJob(ctx, prev.ID, domain.JobCancelled, "", time.Now().UTC())
+		}
+		s.archJobsMu.Lock()
+		if prev := s.archRuns[pid]; prev != nil {
+			prev.cancel()
+			// The superseded run's own defer marks it cancelled; it checks
+			// currentArchRun before every writeback and will stop on its next pass.
+			s.finishArchJobAsync(prev.jobID, domain.JobCancelled)
+			delete(s.archRuns, pid)
+		}
+		s.archJobsMu.Unlock()
+	}
 	job := &domain.Job{
 		ID: id.New(), ProjectID: pid, Type: domain.JobArchDraft,
 		ScopeKind: archScopeKind, ScopeID: pid, ScopeLabel: scope,
-		Status: domain.JobRunning, StartedAt: now, UpdatedAt: now,
+		// Who asked: they may pause or cancel their own job.
+		CreatedBy: userFromContext(ctx),
 	}
-	if err := s.store.CreateJob(ctx, job); err != nil {
+	if _, err := s.enqueueJob(ctx, job, map[string]string{"scope": scope}); err != nil {
 		return nil
 	}
-
-	runCtx, cancel := context.WithCancel(context.Background())
-
-	s.archJobsMu.Lock()
-	if s.archRuns == nil {
-		s.archRuns = map[string]*archRun{}
-	}
-	if prev := s.archRuns[pid]; prev != nil && supersede {
-		prev.cancel()
-		// The superseded run's own defer marks it cancelled; it checks
-		// currentArchRun before every writeback and will stop on its next pass.
-		s.finishArchJobAsync(prev.jobID, domain.JobCancelled)
-	}
-	s.archRuns[pid] = &archRun{jobID: job.ID, scope: scope, cancel: cancel}
-	s.archJobsMu.Unlock()
-
-	go s.runArchEnrichment(runCtx, job.ID, pid, comps, scope)
 	return job
 }
 

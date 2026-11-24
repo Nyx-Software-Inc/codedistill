@@ -116,7 +116,9 @@ func launchAppWindow(ctx context.Context, addr string, log *slog.Logger) (done <
 	}
 
 	profile := appProfileDir()
-	enlargeSavedWindow(filepath.Join(profile, "Default", "Preferences"), log)
+	prefs := filepath.Join(profile, "Default", "Preferences")
+	enlargeSavedWindow(prefs, log)
+	allowPaneWindows(prefs, url, log)
 	cmd := exec.Command(bin,
 		"--app="+url,
 		"--user-data-dir="+profile,
@@ -201,6 +203,60 @@ func enlargeSavedWindow(prefsPath string, log *slog.Logger) {
 	if err := os.WriteFile(prefsPath, out, 0o600); err == nil {
 		log.Info("app window: enlarged the saved window size")
 	}
+}
+
+// allowPaneWindows lets CodeDistill open its own windows: a pane popped out
+// of the main window is reopened when the app starts, when nothing has been
+// clicked, and Chromium's popup blocker refuses a window opened then. Window
+// management is what lets a popped-out window open on another screen
+// (docs/design/panes.md, "Platform limits").
+//
+// Both are granted to the app's own origin, in CodeDistill's own profile.
+// Before the first launch there is no Preferences file yet; one holding only
+// these settings is written, and Chromium fills in the rest.
+func allowPaneWindows(prefsPath, origin string, log *slog.Logger) {
+	prefs := map[string]any{}
+	if b, err := os.ReadFile(prefsPath); err == nil {
+		if json.Unmarshal(b, &prefs) != nil {
+			return
+		}
+	} else if !os.IsNotExist(err) {
+		return
+	}
+	pattern := origin + ",*"
+	changed := false
+	for _, kind := range []string{"popups", "window_placement"} {
+		exceptions := child(child(child(prefs, "profile"), "content_settings"), "exceptions")
+		rules := child(exceptions, kind)
+		if r, ok := rules[pattern].(map[string]any); ok && r["setting"] == float64(1) {
+			continue
+		}
+		rules[pattern] = map[string]any{"setting": 1}
+		changed = true
+	}
+	if !changed {
+		return
+	}
+	out, err := json.Marshal(prefs)
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(prefsPath), 0o700); err != nil {
+		return
+	}
+	if err := os.WriteFile(prefsPath, out, 0o600); err == nil {
+		log.Info("app window: allowed CodeDistill's own pane windows", "origin", origin)
+	}
+}
+
+// child returns m[k] as an object, creating it (or replacing a non-object).
+func child(m map[string]any, k string) map[string]any {
+	c, ok := m[k].(map[string]any)
+	if !ok {
+		c = map[string]any{}
+		m[k] = c
+	}
+	return c
 }
 
 // enlargeBounds applies the rule above to one saved placement.

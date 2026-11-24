@@ -31,6 +31,7 @@ import (
 	"codedistill/internal/events"
 	"codedistill/internal/features"
 	"codedistill/internal/git"
+	"codedistill/internal/jobqueue"
 	"codedistill/internal/mcpmap"
 	"codedistill/internal/mcpworker"
 	"codedistill/internal/power"
@@ -57,6 +58,10 @@ type Server struct {
 	// auth is the OIDC login provider (multi-user). nil = single-user mode:
 	// the login routes report "not configured" and currentUser stays 'local'.
 	auth *oidcAuth
+	// trustOIDCEmail: count the provider's email even without email_verified,
+	// for providers that omit the claim but vouch for their addresses
+	// (CODEDISTILL_OIDC_TRUST_EMAIL=1; Azure AD, for one).
+	trustOIDCEmail bool
 	// bootstrapAdminEmail: the first login with this email becomes workspace
 	// owner. allowedDomains: optional email-domain allowlist (empty = any).
 	bootstrapAdminEmail string
@@ -110,6 +115,20 @@ type Server struct {
 	// jobRuns holds a cancel func per job this server started, so Cancel
 	// actually stops the work rather than only marking the row.
 	jobRuns jobRegistry
+	// queue starts submitted jobs as job slots free (job_queue.go). Made on
+	// first use; run from StartJobQueue or the first submit.
+	queue     *jobqueue.Scheduler
+	queueMake sync.Once
+	queueRun  sync.Once
+	queueStop context.CancelFunc
+	queueDone chan struct{}
+
+	// routes is the router, kept so a test can check that every rule in
+	// authz.go names a real route.
+	routes *http.ServeMux
+	// readAuth: reads need the token too, on a server reachable beyond this
+	// machine with no sign-in configured (WithReadAuth).
+	readAuth bool
 	// criteriaJobs tracks in-flight "Draft with AI" acceptance-criteria runs by
 	// owner (type+id). The draft runs as a background job on context.Background
 	// so closing the modal / reloading / closing the tab can't cancel it; the
@@ -207,6 +226,17 @@ func NewServer(store storage.Storage, a *agent.Agent, build BuildInfo, log *slog
 		log = slog.Default()
 	}
 	return &Server{store: store, agent: a, build: build, log: log, export: export, suggester: suggester, embedder: embedder, generator: generator}
+}
+
+// SignInConfigured reports whether people sign in to this server (multi-user).
+func (s *Server) SignInConfigured() bool { return s.auth != nil }
+
+// WithReadAuth makes reads need the API token as writes do: for a server
+// reachable beyond this machine without sign-in configured, where open reads
+// would show every project to anyone who can reach the port.
+func (s *Server) WithReadAuth(v bool) *Server {
+	s.readAuth = v
+	return s
 }
 
 // WithAuthToken sets the API token that gates write requests and the
@@ -369,7 +399,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/members/{id}/deactivate", s.deactivateMember)
 	mux.HandleFunc("POST /api/v1/members/{id}/reactivate", s.reactivateMember)
 	mux.HandleFunc("PUT /api/v1/members/{id}/role", s.setMemberRole)
+	mux.HandleFunc("PUT /api/v1/members/{id}/roles", s.setMemberRoles)
+	mux.HandleFunc("GET /api/v1/members/seats", s.memberSeats)
+	mux.HandleFunc("GET /api/v1/roles", s.listRoles)
+	mux.HandleFunc("PUT /api/v1/roles/{id}", s.saveRole)
+	mux.HandleFunc("DELETE /api/v1/roles/{id}", s.deleteRole)
 	mux.HandleFunc("POST /api/v1/auth/token/regenerate", s.regenerateAuthToken)
+	mux.HandleFunc("POST /api/v1/auth/token-session", s.tokenSession)
 	mux.HandleFunc("GET /api/v1/credits", s.credits)
 	mux.HandleFunc("GET /api/v1/power", s.powerStatus)
 	mux.HandleFunc("POST /api/v1/search", s.search(s.embedder))
@@ -641,6 +677,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/projects/{id}/fixable-items", s.fixableItems)
 	mux.HandleFunc("POST /api/v1/jobs/{id}/pause", s.pauseJob)
 	mux.HandleFunc("POST /api/v1/jobs/{id}/cancel", s.cancelJob)
+	mux.HandleFunc("PUT /api/v1/jobs/{id}/priority", s.setJobPriority)
+	mux.HandleFunc("POST /api/v1/jobs/{id}/resume", s.resumeJob)
+	mux.HandleFunc("GET /api/v1/jobs/slots", s.jobSlotsView)
 	mux.HandleFunc("GET /api/v1/model-vendors", s.listVendors)
 	mux.HandleFunc("POST /api/v1/model-providers/discover", s.discoverModels)
 	mux.HandleFunc("GET /api/v1/workflow-workers", s.listWorkers)
@@ -769,7 +808,8 @@ func (s *Server) Handler() http.Handler {
 	// Outer→inner: resolve identity (per-user token / session) into the request
 	// context, then gate writes. A resolved identity authorizes writes; the
 	// legacy shared token still works on its own for single-user.
-	return s.resolveIdentity(s.requireWriteAuth(mux))
+	s.routes = mux
+	return s.resolveIdentity(s.authorize(mux))
 }
 
 // --- helpers ---

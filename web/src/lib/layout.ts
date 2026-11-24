@@ -48,6 +48,10 @@ export interface PaneDef {
   /** True when this pane cannot be closed. Nothing is, today — the canvas is
    *  not a pane at all — but a command surface might be. */
   pinned?: boolean;
+  /** True when it can be popped out into a window of its own. A pane whose
+   *  state lives only in the main window's memory cannot be (docs/design/
+   *  panes.md, "Which panes"). */
+  floats?: boolean;
 }
 
 /** The panes that exist. Adding one is a row; the shell needs no change.
@@ -56,19 +60,19 @@ export interface PaneDef {
  *  their previously persisted widths as defaults, so nobody's layout jumps on
  *  first run. */
 export const PANES: readonly PaneDef[] = [
-  { id: 'tree', title: 'Project', slot: 'left', min: 180, size: 241 },
+  { id: 'tree', title: 'Project', slot: 'left', min: 180, size: 241, floats: true },
   // The code is not a pane: it opens in the centre, as tabs beside the
   // canvas (docs/design/center-tabs.md). A saved layout naming 'code' drops it.
   { id: 'dock', title: 'Items', slot: 'right', min: 220, size: 280 },
-  { id: 'jobs', title: 'Jobs', slot: 'right', min: 300, size: 420 },
+  { id: 'jobs', title: 'Jobs', slot: 'right', min: 300, size: 420, floats: true },
   // The pane this whole design exists for: a classification queue rendered as a
   // modal is a queue nobody sees. Wider minimum than the others because its
   // sign-off rows carry a risk band, a subject, flags and two buttons.
-  { id: 'inbox', title: 'Needs review', slot: 'right', min: 320, size: 460 },
+  { id: 'inbox', title: 'Needs review', slot: 'right', min: 320, size: 460, floats: true },
   // The changeset pane (docs/design/code-review.md §2): every file a changeset
   // touched, hunks under hard headers. Cross-file reading wants width, so it
   // is the widest default; the bottom slot suits it even better.
-  { id: 'review', title: 'Changes', slot: 'right', min: 480, size: 720 },
+  { id: 'review', title: 'Changes', slot: 'right', min: 480, size: 720, floats: true },
 ];
 
 export function paneDef(id: string): PaneDef | undefined {
@@ -86,8 +90,38 @@ export interface Slot {
   active: string | null;
 }
 
+/** A pane popped out into a window of its own.
+ *
+ *  `from` is the slot it goes back to. The window's position is kept where the
+ *  platform reports one; on Wayland the desktop places windows and only the
+ *  size means anything (docs/design/panes.md, "Linux test"). */
+export interface Floating {
+  pane: string;
+  from: SlotID;
+  w: number;
+  h: number;
+  x?: number;
+  y?: number;
+}
+
+/** Window bounds, as a popped-out window reports them. */
+export interface Bounds {
+  w: number;
+  h: number;
+  x?: number;
+  y?: number;
+}
+
+/** The size a pane's window opens at the first time. Its slot width is a poor
+ *  guide (a 241px tree is cramped as a window), so never narrower than this. */
+export const FLOAT_MIN_W = 360;
+export const FLOAT_MIN_H = 300;
+const FLOAT_DEFAULT_H = 760;
+
 export interface Layout {
   slots: Record<SlotID, Slot>;
+  /** Panes in windows of their own. A pane is in a slot or here, never both. */
+  floating: Floating[];
   /** Size per PANE, not per slot. The drawer wants 241px and the code canvas
    *  410px; sharing one size per slot would resize jarringly on every tab
    *  switch. */
@@ -100,7 +134,7 @@ export function defaultLayout(): Layout {
   for (const p of PANES) sizes[p.id] = p.size;
   // Nothing open by default. The canvas alone is the honest starting state, and
   // it matches what a new install shows today.
-  return { slots, sizes };
+  return { slots, sizes, floating: [] };
 }
 
 function emptySlot(): Slot {
@@ -115,6 +149,7 @@ function clone(l: Layout): Layout {
       bottom: { panes: [...l.slots.bottom.panes], active: l.slots.bottom.active },
     },
     sizes: { ...l.sizes },
+    floating: l.floating.map((f) => ({ ...f })),
   };
 }
 
@@ -125,8 +160,14 @@ export function slotOf(l: Layout, id: string): SlotID | null {
   return null;
 }
 
+/** floatOf returns a pane's window, or null when it is not popped out. */
+export function floatOf(l: Layout, id: string): Floating | null {
+  return l.floating.find((f) => f.pane === id) ?? null;
+}
+
+/** Open means on screen somewhere: in a slot or in a window of its own. */
 export function isOpen(l: Layout, id: string): boolean {
-  return slotOf(l, id) !== null;
+  return slotOf(l, id) !== null || floatOf(l, id) !== null;
 }
 
 /** openPane puts a pane in its preferred slot and shows it.
@@ -139,6 +180,9 @@ export function openPane(l: Layout, id: string): Layout {
   if (!def) return l;
   const existing = slotOf(l, id);
   if (existing) return activatePane(l, id);
+  // Already in its own window: bringing that window forward is the caller's
+  // job, and adding it to a slot as well would show it twice.
+  if (floatOf(l, id)) return l;
 
   const next = clone(l);
   next.slots[def.slot].panes.push(id);
@@ -153,9 +197,14 @@ export function openPane(l: Layout, id: string): Layout {
  *  going blank with tabs still in it — a slot with panes and no active pane is
  *  a state nothing should be able to reach. */
 export function closePane(l: Layout, id: string): Layout {
+  if (paneDef(id)?.pinned) return l;
+  if (floatOf(l, id)) {
+    const next = clone(l);
+    next.floating = next.floating.filter((f) => f.pane !== id);
+    return next;
+  }
   const slot = slotOf(l, id);
   if (!slot) return l;
-  if (paneDef(id)?.pinned) return l;
 
   const next = clone(l);
   const s = next.slots[slot];
@@ -168,7 +217,10 @@ export function closePane(l: Layout, id: string): Layout {
   return next;
 }
 
+/** A popped-out pane is not toggled closed from the main window: the toolbar
+ *  button brings its window forward instead, which the caller does. */
 export function togglePane(l: Layout, id: string): Layout {
+  if (floatOf(l, id)) return l;
   return isOpen(l, id) ? closePane(l, id) : openPane(l, id);
 }
 
@@ -200,6 +252,8 @@ export function movePane(l: Layout, id: string, to: SlotID, index?: number): Lay
 
   const from = slotOf(l, id);
   const next = clone(l);
+  // A popped-out pane moved into a slot is docked: its window goes.
+  next.floating = next.floating.filter((f) => f.pane !== id);
 
   if (from) {
     const s = next.slots[from];
@@ -214,6 +268,65 @@ export function movePane(l: Layout, id: string, to: SlotID, index?: number): Lay
   // A moved pane is the one you want to see — you just asked for it to be here.
   dest.active = id;
   return next;
+}
+
+/** floatPane pops a pane out into a window of its own.
+ *
+ *  It leaves its slot (or arrives from closed) and remembers where it came
+ *  from, which is where it goes back. A window it had before keeps its size;
+ *  otherwise `bounds` gives the first one. Panes that cannot float are left
+ *  alone. */
+export function floatPane(l: Layout, id: string, bounds?: Partial<Bounds>): Layout {
+  const def = paneDef(id);
+  if (!def?.floats) return l;
+  const had = floatOf(l, id);
+  const next = clone(l);
+  const from = slotOf(l, id);
+  if (from) {
+    const s = next.slots[from];
+    const was = s.panes.indexOf(id);
+    s.panes.splice(was, 1);
+    if (s.active === id) s.active = s.panes[was] ?? s.panes[was - 1] ?? null;
+  }
+  const entry: Floating = had ? { ...had } : {
+    pane: id,
+    from: from ?? def.slot,
+    w: Math.max(FLOAT_MIN_W, paneSize(l, id)),
+    h: FLOAT_DEFAULT_H,
+  };
+  if (from) entry.from = from;
+  applyBounds(entry, bounds);
+  next.floating = [...next.floating.filter((f) => f.pane !== id), entry];
+  return next;
+}
+
+/** dockPane puts a popped-out pane back: into `to` at `index` when the user
+ *  dropped it somewhere, else the slot it came from. */
+export function dockPane(l: Layout, id: string, to?: SlotID, index?: number): Layout {
+  const f = floatOf(l, id);
+  if (!f) return l;
+  return movePane(l, id, to ?? f.from, index);
+}
+
+/** setFloatBounds records where and how big a pane's window is. Sizes are
+ *  clamped to something usable; a position is kept only when it is a number. */
+export function setFloatBounds(l: Layout, id: string, bounds: Partial<Bounds>): Layout {
+  if (!floatOf(l, id)) return l;
+  const next = clone(l);
+  applyBounds(next.floating.find((f) => f.pane === id)!, bounds);
+  return next;
+}
+
+function applyBounds(f: Floating, b?: Partial<Bounds>): void {
+  if (!b) return;
+  if (isNum(b.w)) f.w = Math.max(FLOAT_MIN_W, Math.round(b.w));
+  if (isNum(b.h)) f.h = Math.max(FLOAT_MIN_H, Math.round(b.h));
+  if (isNum(b.x)) f.x = Math.round(b.x);
+  if (isNum(b.y)) f.y = Math.round(b.y);
+}
+
+function isNum(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v);
 }
 
 function clampIndex(i: number, len: number): number {
@@ -302,6 +415,26 @@ export function normalise(raw: unknown): Layout {
       ? slot.active
       : (panes[0] ?? null);
     out.slots[s].active = active;
+  }
+
+  // Popped-out panes. A pane that is also in a slot stays in the slot: that is
+  // the state the main window can show without any window opening.
+  if (Array.isArray(input.floating)) {
+    for (const f of input.floating as unknown[]) {
+      if (!f || typeof f !== 'object') continue;
+      const r = f as Partial<Floating>;
+      const id = r.pane;
+      if (typeof id !== 'string' || !paneDef(id)?.floats || seen.has(id)) continue;
+      seen.add(id);
+      const entry: Floating = {
+        pane: id,
+        from: SLOTS.includes(r.from as SlotID) ? (r.from as SlotID) : paneDef(id)!.slot,
+        w: FLOAT_MIN_W,
+        h: FLOAT_DEFAULT_H,
+      };
+      applyBounds(entry, r);
+      out.floating.push(entry);
+    }
   }
 
   if (input.sizes && typeof input.sizes === 'object') {

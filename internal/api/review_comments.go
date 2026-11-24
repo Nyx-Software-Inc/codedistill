@@ -249,6 +249,11 @@ func (s *Server) updateReviewComment(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now().UTC()
 	if req.Body != nil {
+		// Anyone may resolve a comment; only its author rewrites it.
+		if c.Author != s.currentUser(r) {
+			writeMsg(w, http.StatusForbidden, "only the comment's author can edit it")
+			return
+		}
 		b := strings.TrimSpace(*req.Body)
 		if b == "" {
 			writeMsg(w, http.StatusBadRequest, "body cannot be empty")
@@ -282,6 +287,11 @@ func (s *Server) deleteReviewComment(w http.ResponseWriter, r *http.Request) {
 	}
 	c, ok := s.commentOf(w, r, cs)
 	if !ok {
+		return
+	}
+	// Its author, or an admin removing something that should not be there.
+	if c.Author != s.currentUser(r) && !s.can(r, domain.PermAdminister) {
+		writeMsg(w, http.StatusForbidden, "only the comment's author can delete it")
 		return
 	}
 	if err := s.store.DeleteReviewComment(r.Context(), c.ID); err != nil {

@@ -14,7 +14,8 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import * as api from '../lib/api';
-  import type { Job, JobDetail, Workflow } from '../lib/api';
+  import type { Job, JobDetail, JobPriority, JobSlots, Workflow } from '../lib/api';
+  import { can, myId } from '../lib/session.svelte';
   import FixJobCard from './FixJobCard.svelte';
 
   // The job monitor.
@@ -61,8 +62,17 @@
   // the hard way.
   let timer: ReturnType<typeof setInterval> | null = null;
 
-  const running = $derived(jobs.filter((j) => j.status === 'running' || j.status === 'paused'));
-  const finished = $derived(jobs.filter((j) => j.status !== 'running' && j.status !== 'paused'));
+  // Waiting jobs belong with the running ones, after them, in line order: they
+  // are what the machine does next (docs/design/job-queue.md).
+  const live = (j: Job) => j.status === 'running' || j.status === 'paused' || j.status === 'queued';
+  const running = $derived([
+    ...jobs.filter((j) => j.status === 'running' || j.status === 'paused'),
+    ...jobs.filter((j) => j.status === 'queued').sort((a, b) => (a.position ?? 0) - (b.position ?? 0)),
+  ]);
+  const finished = $derived(jobs.filter((j) => !live(j)));
+  const waitingCount = $derived(running.filter((j) => j.status === 'queued').length);
+  const busyCount = $derived(running.length - waitingCount);
+  let slots = $state<JobSlots | null>(null);
   const shown = $derived(tab === 'running' ? running : finished);
 
   async function load() {
@@ -75,6 +85,9 @@
       ]);
       jobs = js ?? [];
       workflows = wfs ?? [];
+      // The slots are the whole installation's; a failure to read them only
+      // hides the summary.
+      api.getJobSlots().then((s) => (slots = s)).catch(() => (slots = null));
       error = '';
       if (openJob) detail = await api.getJob(openJob);
     } catch (e) {
@@ -115,10 +128,14 @@
     }
   }
 
-  async function act(kind: 'pause' | 'cancel', j: Job) {
+  async function act(kind: 'pause' | 'cancel' | 'resume', j: Job) {
     note = '';
     try {
-      if (kind === 'pause') {
+      if (kind === 'resume') {
+        const p = await api.resumeJob(j.id);
+        note = p.starts_now ? 'Resuming where it stopped.' : `Back in line to resume, ${ordinal(p.position)}.`;
+        tab = 'running';
+      } else if (kind === 'pause') {
         const r = await api.pauseJob(j.id);
         // Say what actually happens. A model call is atomic, so the stop lands
         // at the next checkpoint and the button must not imply otherwise.
@@ -130,6 +147,29 @@
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     }
+  }
+
+  async function reprioritise(j: Job, p: JobPriority) {
+    note = '';
+    try {
+      await api.setJobPriority(j.id, p);
+      await load();
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  /** Whether this person may pause, resume, cancel or reprioritise a job:
+   *  their own with "manage their own jobs", anyone's with "manage
+   *  everyone's jobs". The server decides regardless. */
+  function mayControl(j: Job): boolean {
+    return can('manage_all_jobs') || ((j.created_by ?? '') === myId() && can('manage_own_jobs'));
+  }
+
+  function ordinal(n: number): string {
+    const s = ['th', 'st', 'nd', 'rd'];
+    const v = n % 100;
+    return n + (s[(v - 20) % 10] || s[v] || s[0]);
   }
 
   function workflowOf(j: Job): Workflow | undefined {
@@ -175,7 +215,7 @@
   }
 
   const STATUS_LABEL: Record<string, string> = {
-    running: 'running', paused: 'paused', succeeded: 'succeeded',
+    queued: 'waiting', running: 'running', paused: 'paused', succeeded: 'succeeded',
     failed: 'failed', cancelled: 'cancelled', interrupted: 'interrupted',
   };
 </script>
@@ -187,7 +227,7 @@
   <header>
     <nav class="tabs">
       <button class:active={tab === 'running'} onclick={() => (tab = 'running')}>
-        Running{running.length ? ` (${running.length})` : ''}
+        Running{busyCount ? ` (${busyCount})` : ''}{waitingCount ? ` · ${waitingCount} waiting` : ''}
       </button>
       <button class:active={tab === 'history'} onclick={() => (tab = 'history')}>History</button>
     </nav>
@@ -197,6 +237,13 @@
     {/if}
   </header>
 
+  {#if slots && tab === 'running'}
+    <!-- The slots are shared by every project: this says how full the whole
+         machine is, not just this project. -->
+    <p class="slots" title="Job slots: how many jobs run at once across every project. Change it in Settings › Agents.">
+      {slots.running} of {slots.slots} job slot{slots.slots === 1 ? '' : 's'} busy{slots.queued ? ` · ${slots.queued} waiting` : ''}
+    </p>
+  {/if}
   {#if error}<p class="err" role="alert">{error}</p>{/if}
   {#if note}<p class="note">{note}</p>{/if}
 
@@ -228,7 +275,12 @@
         <div class="when">
           <span title={j.started_at}>{startedLabel(j)}</span>
           <span class="sep">·</span>
-          <span>{j.status === 'running' ? `${dur(j.elapsed_seconds)} so far` : `took ${dur(j.elapsed_seconds)}`}</span>
+          {#if j.status === 'queued'}
+            <span>waiting {dur(j.elapsed_seconds)}</span>
+            {#if j.position}<span class="sep">·</span><span class="place">{ordinal(j.position)} in line</span>{/if}
+          {:else}
+            <span>{j.status === 'running' ? `${dur(j.elapsed_seconds)} so far` : `took ${dur(j.elapsed_seconds)}`}</span>
+          {/if}
           {#if j.eta_seconds > 0}<span class="sep">·</span><span>ETA {dur(j.eta_seconds)}</span>{/if}
           {#if j.status === 'running' && j.percent >= 0}
             <span class="sep">·</span><span>{j.done}/{j.total}{j.phase ? ` ${j.phase}` : ''}</span>
@@ -236,6 +288,11 @@
             <span class="sep">·</span><span>{j.phase}</span>
           {/if}
         </div>
+        {#if j.status === 'queued' && j.paused_by === 'queue'}
+          <div class="why">Paused to make room for an Immediate job; resumes where it stopped when a slot frees.</div>
+        {:else if j.status === 'queued' && j.paused_by === 'restart'}
+          <div class="why">Stopped by a restart; resumes where it stopped when a slot frees.</div>
+        {/if}
 
         <!-- WHAT IT PRODUCED. A decompose that "succeeded" has not finished
              doing anything useful until someone has judged what it found. -->
@@ -271,13 +328,36 @@
           {:else if j.status === 'succeeded' && j.type === 'decompose' && onReview}
             <button class="btn" onclick={() => onReview(j.id)}>See proposals</button>
           {/if}
-          {#if j.status === 'running'}
+          {#if !mayControl(j) && (j.status === 'queued' || j.status === 'running' || j.status === 'paused')}
+            <span class="prio">Started by someone else</span>
+          {:else if j.status === 'queued' && wf?.fixed_priority}
+            <!-- The workflow keeps its jobs at the priority they were given. -->
+            <span class="prio">Priority: {(j.priority ?? 'medium')[0].toUpperCase() + (j.priority ?? 'medium').slice(1)} (fixed)</span>
+            <button class="btn danger" onclick={() => act('cancel', j)}>Cancel</button>
+          {:else if j.status === 'queued'}
+            <!-- Moves it in the line, no higher than its workflow allows. -->
+            <label class="prio">Priority
+              <select value={j.priority ?? 'medium'}
+                      onchange={(e) => reprioritise(j, (e.currentTarget as HTMLSelectElement).value as JobPriority)}>
+                {#if wf?.max_priority === 'immediate' && can('manage_all_jobs')}<option value="immediate">Immediate</option>{/if}
+                <option value="high">High</option>
+                <option value="medium">Medium</option>
+                <option value="low">Low</option>
+              </select>
+            </label>
+            <button class="btn danger" onclick={() => act('cancel', j)}>Cancel</button>
+          {:else if j.status === 'running'}
             {#if wf?.resumable}
               <button class="btn" onclick={() => act('pause', j)}>Pause</button>
             {/if}
             <button class="btn danger" onclick={() => act('cancel', j)}>Cancel</button>
           {:else if j.status === 'paused'}
+            {#if j.can_resume}<button class="btn primary" onclick={() => act('resume', j)}>Resume</button>{/if}
             <button class="btn" onclick={() => act('cancel', j)}>Cancel</button>
+          {:else if j.can_resume}
+            <!-- Interrupted by a restart before resuming existed, or by a
+                 crash: it can still carry on where it stopped. -->
+            <button class="btn" onclick={() => act('resume', j)}>Resume</button>
           {/if}
         </div>
 
@@ -381,6 +461,12 @@
   .st.succeeded { color: var(--ok, #4caf72); }
   .st.failed    { color: var(--danger, #e74c3c); }
   .st.paused    { color: var(--warn, #e0a030); }
+  .st.queued    { color: var(--text-dim); }
+  .place { color: var(--text); }
+  .why { font-size: 0.74rem; color: var(--text-dim); padding: 0.1rem 0.6rem 0.15rem 2rem; }
+  .slots { margin: 0.1rem 0 0.4rem; font-size: 0.75rem; color: var(--text-dim); }
+  .prio { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.75rem; color: var(--text-dim); }
+  .prio select { font: inherit; font-size: 0.75rem; }
 
   .when, .meta {
     display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem;

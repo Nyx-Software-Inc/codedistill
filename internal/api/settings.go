@@ -104,7 +104,10 @@ func validSettingKey(k string) bool {
 // --- user settings ---
 
 func (s *Server) listUserSettings(w http.ResponseWriter, r *http.Request) {
-	uid := r.PathValue("uid")
+	uid := s.settingsOwner(w, r, "", false)
+	if uid == "" {
+		return
+	}
 	list, err := s.store.ListUserSettings(r.Context(), uid)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
@@ -114,14 +117,29 @@ func (s *Server) listUserSettings(w http.ResponseWriter, r *http.Request) {
 	for _, st := range list {
 		out[st.Key] = st.Value
 	}
+	// On a multi-user server a person's list is their own settings, with the
+	// installation's server-wide ones alongside, credentials left out unless
+	// they administer it.
+	if s.auth != nil && uid != localUserID {
+		if shared, err := s.store.ListUserSettings(r.Context(), localUserID); err == nil {
+			for _, st := range shared {
+				if keyIn(st.Key, serverWideUserKeys) && (!keyIn(st.Key, secretUserKeys) || s.can(r, domain.PermAdminister)) {
+					out[st.Key] = st.Value
+				}
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) getUserSetting(w http.ResponseWriter, r *http.Request) {
-	uid := r.PathValue("uid")
 	key := r.PathValue("key")
 	if !validSettingKey(key) {
 		writeMsg(w, http.StatusBadRequest, "invalid key")
+		return
+	}
+	uid := s.settingsOwner(w, r, key, false)
+	if uid == "" {
 		return
 	}
 	st, err := s.store.GetUserSetting(r.Context(), uid, key)
@@ -147,10 +165,13 @@ func (s *Server) getUserSetting(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) putUserSetting(w http.ResponseWriter, r *http.Request) {
-	uid := r.PathValue("uid")
 	key := r.PathValue("key")
 	if !validSettingKey(key) {
 		writeMsg(w, http.StatusBadRequest, "invalid key")
+		return
+	}
+	uid := s.settingsOwner(w, r, key, true)
+	if uid == "" {
 		return
 	}
 	var req settingPutReq
@@ -174,10 +195,13 @@ func (s *Server) putUserSetting(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteUserSetting(w http.ResponseWriter, r *http.Request) {
-	uid := r.PathValue("uid")
 	key := r.PathValue("key")
 	if !validSettingKey(key) {
 		writeMsg(w, http.StatusBadRequest, "invalid key")
+		return
+	}
+	uid := s.settingsOwner(w, r, key, true)
+	if uid == "" {
 		return
 	}
 	if err := s.store.DeleteUserSetting(r.Context(), uid, key); err != nil {
@@ -239,6 +263,9 @@ func (s *Server) putProjectSetting(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, statusFor(err), err)
 		return
 	}
+	if !s.allowProjectKey(w, r, key) {
+		return
+	}
 	var req settingPutReq
 	if err := readJSON(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -264,6 +291,9 @@ func (s *Server) deleteProjectSetting(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
 	if !validSettingKey(key) {
 		writeMsg(w, http.StatusBadRequest, "invalid key")
+		return
+	}
+	if !s.allowProjectKey(w, r, key) {
 		return
 	}
 	if err := s.store.DeleteProjectSetting(r.Context(), pid, key); err != nil {

@@ -14,6 +14,7 @@
 package api
 
 import (
+	"codedistill/internal/domain"
 	"net/http"
 	"strings"
 )
@@ -27,6 +28,16 @@ type meResponse struct {
 	Email       string `json:"email,omitempty"`
 	IsAdmin     bool   `json:"is_admin"`
 	MultiUser   bool   `json:"multi_user"`
+	// Needs says what the app must ask for before anything else: "sign_in"
+	// (a multi-user server, nobody signed in; LoginURL starts it) or "token"
+	// (a server reached from another machine without sign-in: the access
+	// token, once). Empty: in.
+	Needs    string `json:"needs,omitempty"`
+	LoginURL string `json:"login_url,omitempty"`
+	// What the caller may do, and the roles that give it.
+	Permissions []string `json:"permissions"`
+	Roles       []string `json:"roles"`
+	IsOwner     bool     `json:"is_owner"`
 }
 
 // me handles GET /api/v1/me: the current user. In single-user mode that's the
@@ -34,7 +45,18 @@ type meResponse struct {
 // currentUser resolves it from the session. A read, so it's never gated.
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	uid := s.currentUser(r)
-	resp := meResponse{ID: uid, DisplayName: uid, MultiUser: s.auth != nil}
+	resp := meResponse{ID: uid, DisplayName: uid, MultiUser: s.auth != nil, Permissions: []string{}, Roles: []string{}}
+	switch {
+	case s.auth != nil && !isAuthenticated(r.Context()) && !s.validToken(r):
+		resp.Needs, resp.LoginURL = "sign_in", "/api/v1/auth/login"
+		writeJSON(w, http.StatusOK, resp)
+		return
+	case s.auth == nil && s.readAuth && s.TokenValue() != "" && !s.validToken(r):
+		resp.Needs = "token"
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	resp.Permissions = s.permsFor(r).List()
 	if u, err := s.store.GetUser(r.Context(), uid); err == nil {
 		if u.DisplayName != "" {
 			resp.DisplayName = u.DisplayName
@@ -42,9 +64,12 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 		resp.Email = u.Email
 		resp.RealName = u.CanonicalName
 	}
-	if m, err := s.store.GetWorkspaceMember(r.Context(), localWorkspaceID, uid); err == nil {
-		resp.IsAdmin = m.Role == "owner" || m.Role == "admin"
+	if m, err := s.store.GetWorkspaceMember(r.Context(), localWorkspaceID, uid); err == nil && m.Roles != nil {
+		resp.Roles = m.Roles
 	}
+	perms := s.permsFor(r)
+	resp.IsAdmin = perms.Has(domain.PermManageMembers) || perms.Has(domain.PermAdminister)
+	resp.IsOwner = s.auth == nil || hasRoleID(resp.Roles, domain.RoleOwner) || (!isAuthenticated(r.Context()) && s.validToken(r))
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -90,4 +115,13 @@ func (s *Server) updateMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"display_name": name})
+}
+
+func hasRoleID(roles []string, id string) bool {
+	for _, r := range roles {
+		if r == id {
+			return true
+		}
+	}
+	return false
 }
