@@ -46,29 +46,40 @@ func (s *Store) GlobalStats(ctx context.Context) (*domain.GlobalStats, error) {
 		return nil, fmt.Errorf("count knowledge entries: %w", err)
 	}
 
-	byStatus := func(table string, dst map[string]int) error {
-		rows, err := s.DB.QueryContext(ctx, `SELECT status, COUNT(*) FROM `+table+` GROUP BY status`)
+	// By status, the items behind an archived card counted apart: archiving
+	// hides the card, and the work item keeps whatever status it had. An item
+	// whose card was deleted has no card, and is not archived.
+	byStatus := func(table string, dst map[string]int, archived *int) error {
+		rows, err := s.DB.QueryContext(ctx,
+			`SELECT w.status, si.archived_at IS NOT NULL, COUNT(*)
+			   FROM `+table+` w LEFT JOIN scratchpad_items si ON si.id = w.source_item_id
+			  GROUP BY w.status, si.archived_at IS NOT NULL`)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
 			var st string
+			var arch bool
 			var n int
-			if err := rows.Scan(&st, &n); err != nil {
+			if err := rows.Scan(&st, &arch, &n); err != nil {
 				return err
 			}
-			dst[st] = n
+			if arch {
+				*archived += n
+			} else {
+				dst[st] += n
+			}
 		}
 		return rows.Err()
 	}
-	if err = byStatus("todo_items", out.Todos); err != nil {
+	if err = byStatus("todo_items", out.Todos, &out.TodosArchived); err != nil {
 		return nil, fmt.Errorf("todo status counts: %w", err)
 	}
-	if err = byStatus("bug_items", out.Bugs); err != nil {
+	if err = byStatus("bug_items", out.Bugs, &out.BugsArchived); err != nil {
 		return nil, fmt.Errorf("bug status counts: %w", err)
 	}
-	if err = byStatus("use_case_items", out.UseCases); err != nil {
+	if err = byStatus("use_case_items", out.UseCases, &out.UseCasesArchived); err != nil {
 		return nil, fmt.Errorf("use-case status counts: %w", err)
 	}
 	return out, nil

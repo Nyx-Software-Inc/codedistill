@@ -48,6 +48,31 @@
     return runsOn;
   }
 
+  /** Whether a workflow has a Coordinator to configure. */
+  const coordinated = (wf: Workflow) => wf.steps.some((st) => st.worker_type === 'coordinator');
+
+  async function coordinate(wf: Workflow, coordinator: 'agent' | 'rules', lenses: string[]) {
+    if (lenses.length === 0) {
+      error = 'Keep at least one lens: the Security Exploiter attacks every change, but someone must also check it is right.';
+      return;
+    }
+    try {
+      await api.setCoordination(wf.id, coordinator, lenses);
+      await load();
+      saved = coordinator === 'rules'
+        ? `${wf.name}: the built-in rules make the judgment calls.`
+        : `${wf.name}: the Coordinator makes the judgment calls.`;
+      error = '';
+      setTimeout(() => (saved = ''), 4000);
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
+  }
+  function toggleLens(wf: Workflow, id: string, on: boolean) {
+    const next = api.LENSES.map((l) => l.id).filter((l) => (l === id ? on : wf.lenses.includes(l)));
+    void coordinate(wf, wf.coordinator, next);
+  }
+
   async function choose(wf: Workflow, ordinal: number, providerId: string) {
     try {
       await api.setStepProvider(wf.id, ordinal, providerId);
@@ -99,10 +124,51 @@
           {/if}
         </p>
 
+        {#if coordinated(w)}
+          <!-- Who makes the judgment calls, and who reviews each change
+               (docs/design/coordinator-agent.md). -->
+          <div class="coord">
+            <div class="row">
+              <span class="label">Judgment calls</span>
+              <div class="seg" role="radiogroup" aria-label="Who makes the judgment calls">
+                <button role="radio" aria-checked={w.coordinator === 'agent'} class:on={w.coordinator === 'agent'}
+                        onclick={() => coordinate(w, 'agent', w.lenses)}>The Coordinator</button>
+                <button role="radio" aria-checked={w.coordinator === 'rules'} class:on={w.coordinator === 'rules'}
+                        onclick={() => coordinate(w, 'rules', w.lenses)}>Rules (built in)</button>
+              </div>
+            </div>
+            <p class="hint">
+              {#if w.coordinator === 'agent'}
+                A model decides which items need work, which objections are real and what to try next, on the
+                model chosen for the coordinator below. It writes no code and cannot pass work: only verification
+                does. When it cannot decide, the built-in rules do, and the job says so.
+              {:else}
+                Every objection goes back to the Remediator, failed checks go back, and an item going in
+                circles is handed to you: CodeDistill's behaviour before the Coordinator.
+              {/if}
+            </p>
+            <div class="row lenses">
+              <span class="label">Challengers</span>
+              <div class="checks">
+                <label class="lens fixed" title="Attacks every change in every round, and a security finding's plan. Not optional.">
+                  <input type="checkbox" checked disabled /> Security Exploiter <span class="always">every change</span>
+                </label>
+                {#each api.LENSES as l (l.id)}
+                  <label class="lens" title={l.question}>
+                    <input type="checkbox" checked={w.lenses.includes(l.id)}
+                           onchange={(e) => toggleLens(w, l.id, e.currentTarget.checked)} />
+                    {l.name}
+                  </label>
+                {/each}
+              </div>
+            </div>
+          </div>
+        {/if}
+
         {#each w.steps as st (st.ordinal)}
           <div class="step">
             <div class="who">
-              <span class="worker">{st.worker_type}</span>
+              <span class="worker">{roleOf(w, st.worker_type)?.role ?? st.worker_type}</span>
               {#if st.label}<span class="what">{st.label}</span>{/if}
             </div>
             <div class="pick">
@@ -161,7 +227,8 @@
     padding: 0.45rem 0; border-top: 1px solid var(--p-2a2a2a);
   }
   .who { flex: 0 0 13rem; }
-  .worker { display: block; font-family: var(--mono, ui-monospace); font-size: 0.82rem; }
+  .worker { display: block; font-size: 0.84rem; font-weight: 600; }
+  .worker::first-letter { text-transform: uppercase; }
   .what { display: block; font-size: 0.75rem; color: var(--text-dim); }
   .pick { flex: 1; min-width: 0; }
   select {
@@ -169,6 +236,23 @@
     background: var(--p-1e1e1e); color: var(--text);
     border: 1px solid var(--p-3a3a3a); border-radius: 4px;
     padding: 0.3rem 0.45rem; font-size: 0.82rem;
+  }
+  .coord { border-top: 1px solid var(--p-2a2a2a); padding: 0.55rem 0 0.45rem; display: flex; flex-direction: column; gap: 0.4rem; }
+  .coord .row { display: flex; align-items: center; gap: 1rem; }
+  .coord .label { flex: 0 0 13rem; font-size: 0.82rem; }
+  .seg { display: inline-flex; border: 1px solid var(--p-3a3a3a); border-radius: 5px; overflow: hidden; }
+  .seg button { background: none; border: 0; color: var(--p-999999); font: inherit; font-size: 0.78rem; padding: 0.2rem 0.65rem; cursor: pointer; }
+  .seg button + button { border-left: 1px solid var(--p-3a3a3a); }
+  .seg button.on { background: var(--p-2a2a2a); color: var(--p-e0e0e0); }
+  .hint { margin: 0 0 0 14rem; font-size: 0.74rem; color: var(--p-888888); max-width: 40rem; }
+  .checks { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; gap: 0.35rem 0.9rem; }
+  .lens { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.8rem; cursor: pointer; }
+  .lens.fixed { cursor: help; color: var(--p-aaaaaa); }
+  .always { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--p-777777); }
+  @media (max-width: 640px) {
+    .coord .row { flex-wrap: wrap; }
+    .coord .label { flex-basis: 100%; }
+    .hint { margin-left: 0; }
   }
   .short { margin: 0.25rem 0 0; font-size: 0.76rem; color: var(--danger, #e74c3c); }
   .need { margin: 0.25rem 0 0; font-size: 0.72rem; color: var(--p-777777); }

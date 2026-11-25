@@ -323,6 +323,35 @@ func (s *Server) listWorkflows(w http.ResponseWriter, r *http.Request) {
 // setStepProvider points one step of a workflow at a model. This is where
 // worker configuration lives now: "decompose runs on Claude" is a fact about
 // decomposing, not about the list of connections.
+// setCoordination handles PUT /api/v1/workflows/{id}/coordination: who
+// coordinates the workflow's jobs, a model ("agent") or the built-in "rules",
+// and which challenger lenses review each change (docs/design/
+// coordinator-agent.md). The Security Exploiter is not a lens to choose: it
+// reviews every change.
+func (s *Server) setCoordination(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Coordinator string   `json:"coordinator"`
+		Lenses      []string `json:"lenses"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if req.Coordinator != domain.CoordinatorAgent && req.Coordinator != domain.CoordinatorRules {
+		writeMsg(w, http.StatusBadRequest, "coordinator must be agent or rules")
+		return
+	}
+	if err := validLenses(req.Lenses); err != "" {
+		writeMsg(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.store.SetWorkflowCoordination(r.Context(), r.PathValue("id"), req.Coordinator, req.Lenses, time.Now().UTC()); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) setStepProvider(w http.ResponseWriter, r *http.Request) {
 	ordinal, err := strconv.Atoi(r.PathValue("ordinal"))
 	if err != nil {

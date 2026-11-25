@@ -32,7 +32,7 @@ import (
 func (s *Store) ListWorkflows(ctx context.Context) ([]*domain.Workflow, error) {
 	rows, err := s.DB.QueryContext(ctx,
 		`SELECT id, name, description, builtin, resumable, enabled, created_at, updated_at,
-		        max_priority, fixed_priority
+		        max_priority, fixed_priority, coordinator, lenses
 		 FROM workflows ORDER BY builtin DESC, name`)
 	if err != nil {
 		return nil, fmt.Errorf("list workflows: %w", err)
@@ -45,10 +45,12 @@ func (s *Store) ListWorkflows(ctx context.Context) ([]*domain.Workflow, error) {
 		w := &domain.Workflow{}
 		var builtin, resumable, enabled, fixed int
 		var desc sql.NullString
+		var lenses string
 		if err := rows.Scan(&w.ID, &w.Name, &desc, &builtin, &resumable, &enabled,
-			&w.CreatedAt, &w.UpdatedAt, &w.MaxPriority, &fixed); err != nil {
+			&w.CreatedAt, &w.UpdatedAt, &w.MaxPriority, &fixed, &w.Coordinator, &lenses); err != nil {
 			return nil, err
 		}
+		w.Lenses = splitLenses(lenses)
 		w.Description = desc.String
 		w.Builtin, w.Resumable, w.Enabled = builtin != 0, resumable != 0, enabled != 0
 		w.FixedPriority = fixed != 0
@@ -243,10 +245,11 @@ func (s *Store) CreateWorkflow(ctx context.Context, w *domain.Workflow) error {
 
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO workflows (id, name, description, builtin, resumable, enabled, created_at, updated_at,
-		                        max_priority, fixed_priority)
-		 VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`,
+		                        max_priority, fixed_priority, coordinator, lenses)
+		 VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		w.ID, w.Name, w.Description, boolInt(w.Resumable), boolInt(w.Enabled),
-		w.CreatedAt, w.UpdatedAt, maxPriorityOr(w.MaxPriority), boolInt(w.FixedPriority)); err != nil {
+		w.CreatedAt, w.UpdatedAt, maxPriorityOr(w.MaxPriority), boolInt(w.FixedPriority),
+		coordinatorOr(w.Coordinator), strings.Join(w.Lenses, ",")); err != nil {
 		return fmt.Errorf("create workflow: %w", err)
 	}
 	for i, st := range w.Steps {
@@ -262,6 +265,38 @@ func (s *Store) CreateWorkflow(ctx context.Context, w *domain.Workflow) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// SetWorkflowCoordination sets who coordinates a workflow's jobs and which
+// challenger lenses review each change.
+func (s *Store) SetWorkflowCoordination(ctx context.Context, id, coordinator string, lenses []string, at time.Time) error {
+	res, err := s.DB.ExecContext(ctx,
+		`UPDATE workflows SET coordinator = ?, lenses = ?, updated_at = ? WHERE id = ?`,
+		coordinatorOr(coordinator), strings.Join(lenses, ","), at, id)
+	if err != nil {
+		return fmt.Errorf("set workflow coordination: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("set workflow coordination: no workflow %q", id)
+	}
+	return nil
+}
+
+func coordinatorOr(c string) string {
+	if c == "" {
+		return domain.CoordinatorAgent
+	}
+	return c
+}
+
+func splitLenses(s string) []string {
+	out := []string{}
+	for _, l := range strings.Split(s, ",") {
+		if l = strings.TrimSpace(l); l != "" {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 // maxPriorityOr stores the default, High, for a workflow that names none: being

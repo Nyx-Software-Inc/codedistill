@@ -14,7 +14,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import * as api from '../lib/api';
-  import type { FixJobItem, AgentRun } from '../lib/api';
+  import type { FixJobItem, AgentRun, JobDecision } from '../lib/api';
 
   // The expanded card of a Fix scanner findings run: what each item came to,
   // how CodeDistill checked it, and what each agent run took.
@@ -121,14 +121,38 @@
     finding_gone: 'finding gone', nothing_new: 'nothing new', tests: 'tests',
     tests_fail_before: 'new tests failed before the fix', claims: 'claims recorded',
   };
-  const ROLE: Record<string, string> = { solutioner: 'fixer', challenger: 'reviewer', test_builder: 'TestBuilder' };
+  const ROLE: Record<string, string> = {
+    solutioner: 'Remediator', challenger: 'challenger', test_builder: 'TestBuilder',
+    coordinator: 'Coordinator', arbiter: 'Arbiter',
+  };
+  /** Challenger lenses as people know them; the ids are stored history. */
+  const LENS: Record<string, string> = {
+    security: 'Security Exploiter', code: 'Correctness challenger', compatibility: 'Compatibility challenger',
+    failure: 'Failure challenger', design: 'Design challenger',
+  };
 
-  function who(r: AgentRun): string {
-    const role = r.lens ? `${r.lens} reviewer` : (ROLE[r.role] ?? r.role);
-    return `${role} · ${r.phase} r${r.round}`;
-  }
   function roleOf(r: AgentRun): string {
-    return r.lens ? `${r.lens} reviewer` : (ROLE[r.role] ?? r.role);
+    if (r.role === 'challenger' && r.lens) return LENS[r.lens] ?? `${r.lens} challenger`;
+    return ROLE[r.role] ?? r.role;
+  }
+  function who(r: AgentRun): string {
+    return `${roleOf(r)} · ${r.phase} r${r.round}`;
+  }
+
+  const DECIDER: Record<string, string> = { coordinator: 'Coordinator', arbiter: 'Arbiter', rules: 'Rules' };
+  const MOVE: Record<string, string> = {
+    skip: 'skipped the item', ask_person: 'asked you', send_back: 'sent it back to the Remediator',
+    proceed: 'let the work go on', accept: 'accepted', reject: 'rejected',
+    sustain: 'sustained', overrule: 'overruled', needs_evidence: 'asked for a test to settle',
+  };
+  /** A decision as a sentence: "Coordinator rejected: <objection>". */
+  function decided(d: JobDecision): string {
+    const what = MOVE[d.move] ?? d.move;
+    return d.point_id ? `${what}: ${d.point_text ?? d.point_id}` : what;
+  }
+  function decisionTitle(d: JobDecision): string {
+    return [d.reason, d.evidence && `Evidence: ${d.evidence}`, d.guidance && `Guidance: ${d.guidance}`,
+      d.model && `Model: ${d.model}`].filter(Boolean).join('\n');
   }
   function secs(ms: number): string {
     const s = Math.round(ms / 1000);
@@ -202,7 +226,7 @@
       {/if}
       {#if i.reason && i.status !== 'fixed'}<p class="reason">{i.reason}</p>{/if}
 
-      {#if openItem === i.id && i.status !== 'skipped' && i.status !== 'queued'}
+      {#if openItem === i.id && i.status !== 'queued' && (i.status !== 'skipped' || i.decisions?.length)}
         <div class="body">
           {#if i.checks.length}
             <div class="checks">
@@ -224,6 +248,23 @@
               <span class="lbl">Notes</span>
               {i.notes} for you{i.top_note ? ` — most raised${(i.top_note_count ?? 0) > 1 ? ` (${i.top_note_count}×)` : ''}:` : ''}
               {#if i.top_note}<span class="top" title={i.top_note}>{i.top_note}</span>{/if}
+            </div>
+          {/if}
+          {#if i.decisions?.length}
+            <!-- The journal: who decided what, and why. -->
+            <div class="decisions">
+              <span class="lbl">Decisions</span>
+              <ol>
+                {#each i.decisions as d (d.id)}
+                  <li class={d.decided_by} title={decisionTitle(d)}>
+                    <span class="by">{DECIDER[d.decided_by] ?? d.decided_by}</span>
+                    {#if d.round}<span class="rd">r{d.round}</span>{/if}
+                    <span class="what">{decided(d)}</span>
+                    {#if d.reason}<span class="why"> — {d.reason}</span>{/if}
+                    {#if d.fallback}<div class="fell">the built-in rules decided instead: {d.fallback}</div>{/if}
+                  </li>
+                {/each}
+              </ol>
             </div>
           {/if}
           {#if i.commit_sha}
@@ -299,6 +340,13 @@
   .line code { font-family: ui-monospace, monospace; font-size: 0.74rem; }
   .top { color: var(--text-dim); display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2;
          -webkit-box-orient: vertical; overflow: hidden; }
+  .decisions ol { list-style: none; margin: 0.15rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 0.2rem; }
+  .decisions li { overflow-wrap: anywhere; cursor: help; }
+  .decisions .by { font-weight: 600; }
+  .decisions li.rules .by { color: var(--text-dim); font-weight: normal; }
+  .decisions .rd { color: var(--text-dim); font-size: 0.7rem; margin: 0 0.25rem; }
+  .decisions .why { color: var(--text-dim); }
+  .decisions .fell { color: var(--warn, #e0a030); font-size: 0.72rem; margin-left: 1rem; }
   .runs-wrap { overflow-x: auto; }
   .runs tr.live td { color: var(--accent); }
   .tok { cursor: help; }

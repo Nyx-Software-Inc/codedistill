@@ -14,9 +14,10 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import * as api from '../lib/api';
-  import type { Job, JobDetail, JobPriority, JobSlots, Workflow } from '../lib/api';
+  import type { Job, JobDetail, JobPriority, Workflow } from '../lib/api';
   import { can, myId } from '../lib/session.svelte';
   import FixJobCard from './FixJobCard.svelte';
+  import JobAnalytics from './JobAnalytics.svelte';
 
   // The job monitor.
   //
@@ -72,7 +73,6 @@
   const finished = $derived(jobs.filter((j) => !live(j)));
   const waitingCount = $derived(running.filter((j) => j.status === 'queued').length);
   const busyCount = $derived(running.length - waitingCount);
-  let slots = $state<JobSlots | null>(null);
   const shown = $derived(tab === 'running' ? running : finished);
 
   async function load() {
@@ -85,9 +85,6 @@
       ]);
       jobs = js ?? [];
       workflows = wfs ?? [];
-      // The slots are the whole installation's; a failure to read them only
-      // hides the summary.
-      api.getJobSlots().then((s) => (slots = s)).catch(() => (slots = null));
       error = '';
       if (openJob) detail = await api.getJob(openJob);
     } catch (e) {
@@ -237,13 +234,9 @@
     {/if}
   </header>
 
-  {#if slots && tab === 'running'}
-    <!-- The slots are shared by every project: this says how full the whole
-         machine is, not just this project. -->
-    <p class="slots" title="Job slots: how many jobs run at once across every project. Change it in Settings › Agents.">
-      {slots.running} of {slots.slots} job slot{slots.slots === 1 ? '' : 's'} busy{slots.queued ? ` · ${slots.queued} waiting` : ''}
-    </p>
-  {/if}
+  <!-- How full the job slots are, the tokens used and the machine: shared by
+       every project, so it shows on both tabs. -->
+  <JobAnalytics />
   {#if error}<p class="err" role="alert">{error}</p>{/if}
   {#if note}<p class="note">{note}</p>{/if}
 
@@ -464,7 +457,6 @@
   .st.queued    { color: var(--text-dim); }
   .place { color: var(--text); }
   .why { font-size: 0.74rem; color: var(--text-dim); padding: 0.1rem 0.6rem 0.15rem 2rem; }
-  .slots { margin: 0.1rem 0 0.4rem; font-size: 0.75rem; color: var(--text-dim); }
   .prio { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.75rem; color: var(--text-dim); }
   .prio select { font: inherit; font-size: 0.75rem; }
 

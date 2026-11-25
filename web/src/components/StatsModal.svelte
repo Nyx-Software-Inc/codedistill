@@ -13,9 +13,11 @@
 
 <script lang="ts">
   // Cross-project usage stats (UC-64), opened from the profile menu. A read-only
-  // snapshot: totals + per-status breakdowns across every project.
+  // snapshot across every project: per kind, what is open, what is archived
+  // and what is finished, then the statuses of everything not archived.
   import * as api from '../lib/api';
   import Modal from './Modal.svelte';
+  import { isTodoDone, isBugDone, isUseCaseDone } from '../lib/lifecycle';
 
   type Props = { open: boolean; onClose: () => void };
   let { open, onClose }: Props = $props();
@@ -46,6 +48,11 @@
   }
 
   const total = (m: Record<string, number>) => Object.values(m).reduce((a, b) => a + b, 0);
+  // Open: not archived and not in a finished status, by the same definition
+  // of finished the lists use. Archived: the card is archived; the work item
+  // keeps its status, so it is counted apart from both.
+  const sumIf = (m: Record<string, number>, keep: (s: string) => boolean) =>
+    Object.entries(m).reduce((n, [s, c]) => (keep(s) ? n + c : n), 0);
   // Status → count, sorted by count desc for a stable, useful order.
   const breakdown = (m: Record<string, number>) =>
     Object.entries(m).sort((a, b) => b[1] - a[1]);
@@ -65,17 +72,25 @@
     </div>
 
     {#each [
-      { label: 'Todos', m: stats.todos },
-      { label: 'Bugs', m: stats.bugs },
-      { label: 'Use cases', m: stats.use_cases },
+      { label: 'Todos', m: stats.todos, archived: stats.todos_archived ?? 0, done: (s: string) => isTodoDone(s as never) },
+      { label: 'Bugs', m: stats.bugs, archived: stats.bugs_archived ?? 0, done: (s: string) => isBugDone(s as never) },
+      { label: 'Use cases', m: stats.use_cases, archived: stats.use_cases_archived ?? 0, done: (s: string) => isUseCaseDone(s as never) },
     ] as grp (grp.label)}
+      {@const openN = sumIf(grp.m, (s) => !grp.done(s))}
+      {@const doneN = sumIf(grp.m, grp.done)}
       <div class="grp">
         <div class="grp-head">
           <span class="grp-name">{grp.label}</span>
-          <span class="grp-total">{total(grp.m)}</span>
+          <span class="counts">
+            <span class="grp-total" title="Not archived, and not finished">{openN} open</span>
+            <span class="archived" title="Behind an archived card: hidden from the canvas, whatever their status">{grp.archived} archived</span>
+            {#if doneN}<span class="finished" title="Not archived, and finished">{doneN} finished</span>{/if}
+          </span>
         </div>
-        {#if total(grp.m) === 0}
+        {#if total(grp.m) === 0 && grp.archived === 0}
           <p class="empty">none yet</p>
+        {:else if total(grp.m) === 0}
+          <p class="empty">all archived</p>
         {:else}
           <div class="states">
             {#each breakdown(grp.m) as [st, n] (st)}
@@ -109,6 +124,13 @@
     font-size: 13px; font-weight: 700; color: var(--p-99ccff);
     background: var(--p-16222e); border-radius: 9px; padding: 1px 9px;
   }
+  .counts { display: flex; align-items: baseline; gap: 6px; }
+  .counts > span { cursor: help; }
+  .archived {
+    font-size: 12px; font-weight: 600; color: var(--p-bbbbbb);
+    background: var(--p-1f1f1f); border-radius: 9px; padding: 1px 9px;
+  }
+  .finished { font-size: 11.5px; color: var(--p-888888); }
   .states { display: flex; flex-wrap: wrap; gap: 6px; }
   .state {
     font-size: 11.5px; color: var(--p-bbbbbb);

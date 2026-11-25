@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"time"
 
+	"codedistill/internal/domain"
 	"codedistill/internal/jobqueue"
 	"codedistill/internal/modelprobe"
 )
@@ -67,3 +68,10 @@ func probeClaudeCode(_ context.Context, model string, _ int) modelprobe.Result {
 	return modelprobe.Result{Outcome: modelprobe.ModelUnusable, Model: model, CheckedAt: time.Now().UTC(),
 		Detail: "running agents through Claude Code is part of CodeDistill Pro"}
 }
+
+// liveAgentRuns: no agents in the community edition.
+func (s *Server) liveAgentRuns() []*domain.AgentRun { return nil }
+
+// validLenses: the community edition runs no fix jobs, so there are no
+// lenses to check.
+func validLenses([]string) string { return "" }

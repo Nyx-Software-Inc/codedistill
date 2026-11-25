@@ -18,6 +18,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"codedistill/internal/domain"
 )
@@ -189,15 +190,31 @@ func (s *Store) CreateAgentRun(ctx context.Context, r *domain.AgentRun) error {
 }
 
 // ListAgentRuns returns a job's agent runs, in the order they ran.
+const agentRunColumns = `id, job_id, job_item_id, role, lens, round, agent, model, outcome, exit_code,
+		   started_at, duration_ms, silent_ms, turns, tokens_in, tokens_out, cache_read, cache_write, cost_usd,
+		   tool_calls, files_changed, lines_added, lines_deleted, claims_made, claims_refuted, phase`
+
 func (s *Store) ListAgentRuns(ctx context.Context, jobID string) ([]*domain.AgentRun, error) {
 	rows, err := s.DB.QueryContext(ctx,
-		`SELECT id, job_id, job_item_id, role, lens, round, agent, model, outcome, exit_code,
-		   started_at, duration_ms, silent_ms, turns, tokens_in, tokens_out, cache_read, cache_write, cost_usd,
-		   tool_calls, files_changed, lines_added, lines_deleted, claims_made, claims_refuted, phase
-		 FROM agent_runs WHERE job_id = ? ORDER BY started_at, id`, jobID)
+		`SELECT `+agentRunColumns+` FROM agent_runs WHERE job_id = ? ORDER BY started_at, id`, jobID)
 	if err != nil {
 		return nil, fmt.Errorf("list agent runs: %w", err)
 	}
+	return scanAgentRuns(rows)
+}
+
+// ListAgentRunsSince returns every job's agent runs started at or after
+// since, in every project: what the Jobs pane's analytics count tokens from.
+func (s *Store) ListAgentRunsSince(ctx context.Context, since time.Time) ([]*domain.AgentRun, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT `+agentRunColumns+` FROM agent_runs WHERE started_at >= ? ORDER BY started_at, id`, since)
+	if err != nil {
+		return nil, fmt.Errorf("list agent runs since: %w", err)
+	}
+	return scanAgentRuns(rows)
+}
+
+func scanAgentRuns(rows *sql.Rows) ([]*domain.AgentRun, error) {
 	defer rows.Close()
 	var out []*domain.AgentRun
 	for rows.Next() {
@@ -290,6 +307,48 @@ func (s *Store) ListJobTests(ctx context.Context, jobItemID string) ([]*domain.J
 			t.Applies = &v
 		}
 		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// CreateJobDecision adds a decision to the job's journal.
+func (s *Store) CreateJobDecision(ctx context.Context, d *domain.JobDecision) error {
+	var point any
+	if d.PointID != "" {
+		point = d.PointID
+	}
+	_, err := s.DB.ExecContext(ctx,
+		`INSERT INTO job_decisions (id, job_id, job_item_id, round, phase, situation, move, point_id,
+		   reason, evidence, guidance, decided_by, model, fallback, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		d.ID, d.JobID, d.JobItemID, d.Round, d.Phase, d.Situation, d.Move, point,
+		d.Reason, d.Evidence, d.Guidance, d.DecidedBy, d.Model, d.Fallback, d.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("create decision: %w", err)
+	}
+	return nil
+}
+
+// ListJobDecisions returns an item's journal, oldest first.
+func (s *Store) ListJobDecisions(ctx context.Context, jobItemID string) ([]*domain.JobDecision, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT id, job_id, job_item_id, round, phase, situation, move, point_id,
+		   reason, evidence, guidance, decided_by, model, fallback, created_at
+		 FROM job_decisions WHERE job_item_id = ? ORDER BY created_at, id`, jobItemID)
+	if err != nil {
+		return nil, fmt.Errorf("list decisions: %w", err)
+	}
+	defer rows.Close()
+	var out []*domain.JobDecision
+	for rows.Next() {
+		d := &domain.JobDecision{}
+		var point sql.NullString
+		if err := rows.Scan(&d.ID, &d.JobID, &d.JobItemID, &d.Round, &d.Phase, &d.Situation, &d.Move, &point,
+			&d.Reason, &d.Evidence, &d.Guidance, &d.DecidedBy, &d.Model, &d.Fallback, &d.CreatedAt); err != nil {
+			return nil, err
+		}
+		d.PointID = point.String
+		out = append(out, d)
 	}
 	return out, rows.Err()
 }

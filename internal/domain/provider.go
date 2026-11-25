@@ -58,11 +58,20 @@ const (
 	// WorkerTestBuilder writes the tests for an agreed approach, alongside the
 	// solutioner and without seeing its code.
 	WorkerTestBuilder = "test_builder"
+
+	// WorkerCoordinator makes a job's judgment calls (docs/design/
+	// coordinator-agent.md): which items to work, which objections are real,
+	// what to try next. It writes no code and cannot pass work.
+	WorkerCoordinator = "coordinator"
+
+	// WorkerArbiter settles one disputed objection, fresh, with no history.
+	WorkerArbiter = "arbiter"
 )
 
 // WorkerTypes in a stable order, for UI and validation.
 var WorkerTypes = []string{
 	WorkerClassifier, WorkerDecomposer, WorkerReviewer, WorkerSolutioner, WorkerChallenger, WorkerTestBuilder,
+	WorkerCoordinator, WorkerArbiter,
 }
 
 // ValidWorkerType reports whether t is a worker type CodeDistill itself knows

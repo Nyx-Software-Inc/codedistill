@@ -989,10 +989,17 @@ type CreditsSummary struct {
 // GlobalStats is the cross-project usage summary behind the profile-menu Stats
 // modal (UC-64). Item counts are broken down by status (status → count).
 type GlobalStats struct {
-	Projects    int            `json:"projects"`
-	Scratchpads int            `json:"scratchpads"`
-	KB          int            `json:"kb"`
-	Todos       map[string]int `json:"todos"`
-	Bugs        map[string]int `json:"bugs"`
-	UseCases    map[string]int `json:"use_cases"`
+	Projects    int `json:"projects"`
+	Scratchpads int `json:"scratchpads"`
+	KB          int `json:"kb"`
+	// Status → count for work items whose card is not archived.
+	Todos    map[string]int `json:"todos"`
+	Bugs     map[string]int `json:"bugs"`
+	UseCases map[string]int `json:"use_cases"`
+	// How many of each kind sit behind an archived card. Archiving hides the
+	// card from the canvas; the work item keeps its status, so it is counted
+	// here rather than among the open or finished ones.
+	TodosArchived    int `json:"todos_archived"`
+	BugsArchived     int `json:"bugs_archived"`
+	UseCasesArchived int `json:"use_cases_archived"`
 }

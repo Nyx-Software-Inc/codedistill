@@ -32,6 +32,7 @@ import (
 	"codedistill/internal/features"
 	"codedistill/internal/git"
 	"codedistill/internal/jobqueue"
+	"codedistill/internal/machine"
 	"codedistill/internal/mcpmap"
 	"codedistill/internal/mcpworker"
 	"codedistill/internal/power"
@@ -122,6 +123,11 @@ type Server struct {
 	queueRun  sync.Once
 	queueStop context.CancelFunc
 	queueDone chan struct{}
+
+	// machine samples CPU, memory and GPU for the Jobs pane, only while
+	// someone looks (jobs_analytics.go).
+	machine     *machine.Sampler
+	machineOnce sync.Once
 
 	// proxyCache remembers proxy tokens already verified, until they expire
 	// (at most a minute), so a busy page does not re-verify per request.
@@ -679,6 +685,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/jobs", s.submitJob)
 	mux.HandleFunc("GET /api/v1/workflows", s.listWorkflows)
 	mux.HandleFunc("PUT /api/v1/workflows/{id}/steps/{ordinal}/provider", s.setStepProvider)
+	mux.HandleFunc("PUT /api/v1/workflows/{id}/coordination", s.setCoordination)
 	mux.HandleFunc("GET /api/v1/jobs/{id}", s.jobDetail)
 	mux.HandleFunc("GET /api/v1/jobs/{id}/items", s.fixJobItems)
 	mux.HandleFunc("GET /api/v1/security-knowledge", s.securityKnowledge)
@@ -690,6 +697,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/v1/jobs/{id}/priority", s.setJobPriority)
 	mux.HandleFunc("POST /api/v1/jobs/{id}/resume", s.resumeJob)
 	mux.HandleFunc("GET /api/v1/jobs/slots", s.jobSlotsView)
+	mux.HandleFunc("GET /api/v1/jobs/analytics", s.jobsAnalytics)
+	mux.HandleFunc("GET /api/v1/machine", s.machineView)
 	mux.HandleFunc("GET /api/v1/model-vendors", s.listVendors)
 	mux.HandleFunc("POST /api/v1/model-providers/discover", s.discoverModels)
 	mux.HandleFunc("GET /api/v1/workflow-workers", s.listWorkers)

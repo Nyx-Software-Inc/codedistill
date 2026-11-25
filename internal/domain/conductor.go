@@ -168,6 +168,67 @@ type JobPoint struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// Situations the Coordinator is asked about (docs/design/coordinator-agent.md).
+const (
+	SituationTriage       = "triage"        // before an item is worked
+	SituationObjections   = "objections"    // a challenge returned blocking objections
+	SituationFailedChecks = "failed_checks" // verification failed
+	SituationCircling     = "circling"      // every objection had been sent back twice
+	SituationArbitration  = "arbitration"   // the Arbiter, on one disputed objection
+)
+
+// Moves: what a decider may do. Which are allowed depends on the situation.
+const (
+	MoveWork          = "work"
+	MoveSkip          = "skip"
+	MoveSendBack      = "send_back"
+	MoveAskPerson     = "ask_person"
+	MoveProceed       = "proceed" // every objection rejected: on to the next step
+	MoveAccept        = "accept"  // a ruling: the objection is real
+	MoveReject        = "reject"  // a ruling: it is not, with reason and evidence
+	MoveSustain       = "sustain"
+	MoveOverrule      = "overrule"
+	MoveNeedsEvidence = "needs_evidence"
+)
+
+// SituationMoves are the moves each situation allows; the Coordinator's tool
+// and the conductor both hold a decision to them.
+var SituationMoves = map[string][]string{
+	SituationTriage:       {MoveSkip, MoveAskPerson},
+	SituationObjections:   {MoveSendBack, MoveProceed, MoveAskPerson},
+	SituationFailedChecks: {MoveSendBack, MoveAskPerson},
+	SituationCircling:     {MoveSendBack, MoveAskPerson},
+}
+
+// Who decided.
+const (
+	DecidedByCoordinator = "coordinator"
+	DecidedByArbiter     = "arbiter"
+	DecidedByRules       = "rules"
+)
+
+// JobDecision is one decision about an item, in the job's journal: what the
+// Coordinator, the Arbiter or the Rules decided, and why. The next decision
+// reads the journal, the job card shows it, and the benchmark compares it.
+type JobDecision struct {
+	ID        string `json:"id"`
+	JobID     string `json:"job_id"`
+	JobItemID string `json:"job_item_id"`
+	Round     int    `json:"round"`
+	Phase     string `json:"phase,omitempty"`
+	Situation string `json:"situation"`
+	Move      string `json:"move"`
+	PointID   string `json:"point_id,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+	Evidence  string `json:"evidence,omitempty"`
+	Guidance  string `json:"guidance,omitempty"`
+	DecidedBy string `json:"decided_by"`
+	Model     string `json:"model,omitempty"`
+	// Fallback says why the Rules decided instead of the model, when they did.
+	Fallback  string    `json:"fallback,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // JobTest is a test the TestBuilder wrote for an item, or an existing test it
 // reviewed.
 type JobTest struct {

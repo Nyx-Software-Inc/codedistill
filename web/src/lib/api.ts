@@ -227,6 +227,10 @@ export type GlobalStats = {
   todos: Record<string, number>;
   bugs: Record<string, number>;
   use_cases: Record<string, number>;
+  /** How many sit behind an archived card; the maps above leave them out. */
+  todos_archived: number;
+  bugs_archived: number;
+  use_cases_archived: number;
 };
 export const getGlobalStats = () => req<GlobalStats>('GET', '/stats');
 export const createProject = (body: { name: string; repo_root?: string }) =>
@@ -1990,6 +1994,28 @@ export interface FixJobItem {
   notes: number; top_note?: string; top_note_count?: number;
   labels: string[];
   runs: AgentRun[];
+  /** The item's journal: what the Coordinator, the Arbiter or the built-in
+   *  rules decided, and why (docs/design/coordinator-agent.md). */
+  decisions?: JobDecision[];
+}
+
+export interface JobDecision {
+  id: string;
+  round: number;
+  phase?: string;
+  situation: 'triage' | 'objections' | 'failed_checks' | 'circling' | 'arbitration';
+  move: string;
+  point_id?: string;
+  /** The objection ruled on, in its first wording. */
+  point_text?: string;
+  reason?: string;
+  evidence?: string;
+  guidance?: string;
+  decided_by: 'coordinator' | 'arbiter' | 'rules';
+  model?: string;
+  /** Why the built-in rules decided instead of the Coordinator. */
+  fallback?: string;
+  created_at: string;
 }
 
 export const getFixJobItems = (jobId: string) =>
@@ -2041,6 +2067,12 @@ export interface Workflow {
   max_priority: 'high' | 'immediate';
   /** Its jobs keep the priority they were submitted with. */
   fixed_priority: boolean;
+  /** Who makes its jobs' judgment calls: a model (the coordinator step's) or
+   *  the built-in rules (docs/design/coordinator-agent.md). */
+  coordinator: 'agent' | 'rules';
+  /** Challenger lenses that review each change. The Security Exploiter
+   *  reviews every change besides, and is never listed. */
+  lenses: string[];
   enabled: boolean;
   steps: WorkflowStep[];
   /** What the submission dialog asks for. Declared as data, so a workflow
@@ -2107,9 +2139,71 @@ export interface JobSlots {
   queued: number;
 }
 export const getJobSlots = () => req<JobSlots>('GET', '/jobs/slots');
+
+/** Tokens by kind; total is their sum (input never includes the cache). */
+export interface TokenCounts {
+  in: number;
+  out: number;
+  cache_read: number;
+  cache_write: number;
+  total: number;
+}
+export type AnalyticsWindow = '1h' | '24h' | '7d';
+/** The Jobs pane's analytics, installation-wide (docs/design/jobs-analytics.md). */
+export interface JobsAnalytics {
+  window: AnalyticsWindow;
+  from: string;
+  to: string;
+  slots: number;
+  running: number;
+  queued: number;
+  /** Equal slices of the window: the most jobs running and waiting in each. */
+  timeline: { at: string; running: number; queued: number }[];
+  tokens: {
+    total: TokenCounts;
+    /** Agent runs still going on, counted at what they have used so far. */
+    live_runs: number;
+    by_job: (TokenCounts & { job_id: string; label: string; project: string; type: string })[];
+    by_role: (TokenCounts & { role: string; lens?: string })[];
+    by_model: (TokenCounts & { model: string })[];
+  };
+}
+export const getJobsAnalytics = (window: AnalyticsWindow) =>
+  req<JobsAnalytics>('GET', `/jobs/analytics?window=${window}`);
+
+/** One look at the machine. A figure that could not be read is negative. */
+export interface MachineSample {
+  at: string;
+  cpu_percent: number;
+  mem_used: number;
+  mem_total: number;
+  gpu_percent: number;
+  gpu_mem_used?: number;
+}
+export interface MachineView {
+  /** The last hour, taken only while someone looks. */
+  samples: MachineSample[];
+  gpu: { readable: boolean; name?: string; mem_total?: number; why?: string };
+  every_seconds: number;
+  /** Models a local model server has loaded, and whether they sit on the GPU. */
+  models: { endpoint: string; name: string; size: number; size_vram: number; on: 'gpu' | 'cpu' | 'split' }[];
+  models_error?: string;
+}
+export const getMachine = () => req<MachineView>('GET', '/machine');
 export const resumeJob = (jobId: string) => req<QueuePlace>('POST', `/jobs/${jobId}/resume`);
 export const setJobPriority = (jobId: string, priority: JobPriority) =>
   req<QueuePlace>('PUT', `/jobs/${jobId}/priority`, { priority });
+export const setCoordination = (workflowId: string, coordinator: 'agent' | 'rules', lenses: string[]) =>
+  req<void>('PUT', `/workflows/${workflowId}/coordination`, { coordinator, lenses });
+
+/** The challenger lenses a workflow can choose, as people know them. */
+export const LENSES: { id: string; name: string; question: string }[] = [
+  { id: 'code', name: 'Correctness', question: 'Is the change right, edge cases and errors included?' },
+  { id: 'compatibility', name: 'Compatibility', question: 'Does it break callers, exported APIs, stored data or a boundary?' },
+  { id: 'failure', name: 'Failure', question: 'What happens on error, retry, crash, timeout or partial state?' },
+  { id: 'design', name: 'Design', question: 'Is it bigger than the problem, or missing something it should reuse?' },
+];
+
 export const setStepProvider = (workflowId: string, ordinal: number, providerId: string) =>
   req<void>('PUT', `/workflows/${workflowId}/steps/${ordinal}/provider`, {
     provider_id: providerId,

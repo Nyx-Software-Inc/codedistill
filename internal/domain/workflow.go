@@ -49,6 +49,15 @@ type Workflow struct {
 	// must never push ahead of what people asked for.
 	FixedPriority bool `json:"fixed_priority"`
 
+	// Coordinator is who makes the judgment calls in its jobs: "agent", the
+	// model chosen for the coordinator step, or "rules", the built-in rules
+	// (docs/design/coordinator-agent.md).
+	Coordinator string `json:"coordinator"`
+
+	// Lenses are the challenger lenses that review each change, besides the
+	// Security Exploiter, which reviews every change in every workflow.
+	Lenses []string `json:"lenses"`
+
 	Enabled bool           `json:"enabled"`
 	Steps   []WorkflowStep `json:"steps"`
 
@@ -188,3 +197,9 @@ func (w *Workflow) AllowsPriority(p string) bool {
 	}
 	return JobPriorityRank(p) <= JobPriorityRank(max)
 }
+
+// Coordinator settings.
+const (
+	CoordinatorAgent = "agent"
+	CoordinatorRules = "rules"
+)

@@ -77,3 +77,45 @@ func TestGlobalStats(t *testing.T) {
 		t.Errorf("use_cases = %v, want completed:1", st.UseCases)
 	}
 }
+
+// Work items behind an archived card are counted apart, whatever their
+// status; one whose card was deleted has no card and counts by its status.
+func TestGlobalStatsArchived(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	now := time.Now().UTC()
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(s.CreateProject(ctx, &domain.Project{ID: "p1", Name: "P", CreatedAt: now}))
+	must(s.CreateScratchpad(ctx, &domain.Scratchpad{ID: "sp1", ProjectID: "p1", Name: "m", ClassificationMode: "full", CreatedAt: now}))
+	for _, id := range []string{"live", "shelved", "gone"} {
+		must(s.CreateScratchpadItem(ctx, &domain.ScratchpadItem{ID: id, ScratchpadID: "sp1", Content: id, ContentType: "text",
+			ClassificationState: "classified", CreatedAt: now}))
+	}
+	todo := func(id, card, status string) {
+		must(s.CreateTodoItem(ctx, &domain.TodoItem{ID: id, ProjectID: "p1", SourceItemID: card,
+			Subject: id, Priority: "none", Status: status, Origin: "agent-derived", CreatedAt: now}))
+	}
+	todo("t-open", "live", "incomplete")
+	todo("t-done", "live", "complete")
+	todo("t-shelved-open", "shelved", "incomplete")
+	todo("t-shelved-done", "shelved", "complete")
+	todo("t-orphan", "gone", "in_progress")
+	must(s.CreateBugItem(ctx, &domain.BugItem{ID: "b1", ProjectID: "p1", SourceItemID: "shelved",
+		Subject: "b", Severity: "minor", Status: "open", Origin: "agent-derived", CreatedAt: now}))
+	must(s.SetScratchpadItemArchived(ctx, "shelved", &now))
+	must(s.DeleteScratchpadItem(ctx, "gone"))
+
+	st, err := s.GlobalStats(ctx)
+	must(err)
+	if st.TodosArchived != 2 || st.Todos["incomplete"] != 1 || st.Todos["complete"] != 1 || st.Todos["in_progress"] != 1 {
+		t.Errorf("todos = %v, archived %d; want incomplete 1, complete 1, in_progress 1 (orphaned), archived 2", st.Todos, st.TodosArchived)
+	}
+	if st.BugsArchived != 1 || len(st.Bugs) != 0 {
+		t.Errorf("bugs = %v, archived %d", st.Bugs, st.BugsArchived)
+	}
+}

@@ -351,6 +351,9 @@ type Storage interface {
 	StartQueuedJob(ctx context.Context, id string, at time.Time) (bool, error)
 	SetJobPriority(ctx context.Context, id, priority string, at time.Time) (bool, error)
 	ListRunningJobs(ctx context.Context) ([]*domain.Job, error)
+	// The Jobs pane's analytics (docs/design/jobs-analytics.md).
+	ListJobsSince(ctx context.Context, since time.Time) ([]*domain.Job, error)
+	ListAgentRunsSince(ctx context.Context, since time.Time) ([]*domain.AgentRun, error)
 	PauseJob(ctx context.Context, id, by string, at time.Time) (bool, error)
 	RequeueJob(ctx context.Context, id, by string, at time.Time) (bool, error)
 	RequeueRunningJobs(ctx context.Context, types []string, at time.Time) (int, error)
@@ -381,6 +384,8 @@ type Storage interface {
 	CreateJobPoint(ctx context.Context, p *domain.JobPoint) error
 	SetJobPointKind(ctx context.Context, id, kind string) error
 	ListJobPoints(ctx context.Context, jobItemID string) ([]*domain.JobPoint, error)
+	CreateJobDecision(ctx context.Context, d *domain.JobDecision) error
+	ListJobDecisions(ctx context.Context, jobItemID string) ([]*domain.JobDecision, error)
 	CreateJobTest(ctx context.Context, t *domain.JobTest) error
 	ListJobTests(ctx context.Context, jobItemID string) ([]*domain.JobTest, error)
 
@@ -439,6 +444,7 @@ type Storage interface {
 	ListWorkflows(ctx context.Context) ([]*domain.Workflow, error)
 	GetWorkflow(ctx context.Context, id string) (*domain.Workflow, error)
 	CreateWorkflow(ctx context.Context, w *domain.Workflow) error
+	SetWorkflowCoordination(ctx context.Context, id, coordinator string, lenses []string, at time.Time) error
 	DeleteWorkflow(ctx context.Context, id string) error
 	SetStepProvider(ctx context.Context, workflowID string, ordinal int, providerID string, at time.Time) error
 

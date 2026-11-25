@@ -102,6 +102,26 @@ func (s *Store) ListQueuedJobs(ctx context.Context) ([]*domain.Job, error) {
 	return out, rows.Err()
 }
 
+// ListJobsSince returns every job, in every project, still open or finished
+// at or after since: the jobs a timeline from since onwards can see.
+func (s *Store) ListJobsSince(ctx context.Context, since time.Time) ([]*domain.Job, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT `+jobColumns+` FROM jobs WHERE finished_at IS NULL OR finished_at >= ? ORDER BY started_at, id`, since)
+	if err != nil {
+		return nil, fmt.Errorf("list jobs since: %w", err)
+	}
+	defer rows.Close()
+	var out []*domain.Job
+	for rows.Next() {
+		j, err := scanJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, j)
+	}
+	return out, rows.Err()
+}
+
 // CountRunningJobs counts the jobs holding a slot, in every project. A job
 // started outside the queue (by the command line, in its own process) holds
 // one too, because it is a running row.
