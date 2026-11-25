@@ -36,6 +36,10 @@
   // The key the main window keeps its active project under: the fallback when
   // this window starts before the main one (a restored session).
   const ACTIVE_PROJECT_KEY = 'ui.active_project';
+  /** How long the main window has to come back (a reload) before this window
+   *  closes with it. A slow reload that misses it reopens the window anyway:
+   *  the main window restores every popped-out pane it does not hear from. */
+  const MAIN_GONE_MS = 3000;
 
   const title = $derived(paneDef(pane)?.title ?? pane);
 
@@ -102,12 +106,25 @@
       try { window.resizeBy(w - innerWidth, h - innerHeight); } catch { /* not ours to size */ }
     }
 
+    let closing: ReturnType<typeof setTimeout> | undefined;
     const stop = listen((m) => {
       switch (m.t) {
         case 'state': applyState(m.state); break;
         case 'ask': send({ t: 'hello', pane }); break;
-        case 'main-hello': mainOpen = true; send({ t: 'hello', pane }); break;
-        case 'main-bye': mainOpen = false; break;
+        case 'main-hello':
+          mainOpen = true;
+          clearTimeout(closing);
+          send({ t: 'hello', pane });
+          break;
+        case 'main-bye':
+          // The main window closed, or is reloading. A reload says hello again
+          // in a moment; a close does not, and a popped-out pane must not
+          // outlive it: its window would keep the app running, unseen. Its
+          // place is kept, so it opens again with the main window.
+          mainOpen = false;
+          clearTimeout(closing);
+          closing = setTimeout(() => window.close(), MAIN_GONE_MS);
+          break;
         case 'focus': if (m.pane === pane) window.focus(); break;
         case 'close': if (m.pane === pane) window.close(); break;
       }
@@ -151,6 +168,7 @@
     return () => {
       stop();
       clearTimeout(fallback);
+      clearTimeout(closing);
       for (const u of unsubs) u();
       sse.close();
       window.removeEventListener('resize', onResize);

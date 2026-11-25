@@ -1059,12 +1059,25 @@ func cmdServe(dbPath, model, endpoint, modelAPI, addr, appWindow string, ollamaA
 	if resolveAppMode(appWindow) {
 		windowClosed, stopWindow = launchAppWindow(ctx, addr, logger)
 	}
+	// File → Exit: only when this server opened the app window, so closing
+	// the browser closes every window the app has, popped-out panes too.
+	exitChosen := make(chan struct{}, 1)
+	if windowClosed != nil {
+		apiSrv.SetExit(func() {
+			select {
+			case exitChosen <- struct{}{}:
+			default:
+			}
+		})
+	}
 
 	select {
 	case <-ctx.Done():
 		logger.Info("shutdown signal received")
 	case <-windowClosed:
 		logger.Info("app window closed — shutting down")
+	case <-exitChosen:
+		logger.Info("File → Exit chosen in the app — shutting down")
 	case err := <-serveErr:
 		if err != nil {
 			stopWindow()

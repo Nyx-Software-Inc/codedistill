@@ -82,7 +82,7 @@
   import CodeAnalysisPanel from './components/CodeAnalysisPanel.svelte';
   import HelpPanel from './components/HelpPanel.svelte';
   import type { IconName } from './components/Icon.svelte';
-  import { promptDialog } from './lib/dialog';
+  import { promptDialog, confirmDialog, alertDialog } from './lib/dialog';
   import {
     registerCommands, commandsById, runCommand, isEnabled, isVisible,
     shortcutLabel, setCommandContext, installShortcuts, type Command,
@@ -720,6 +720,15 @@
       },
     },
     {
+      // File → Exit, in the desktop app only: closes every window the app
+      // has, popped-out panes too, and stops CodeDistill. Closing the main
+      // window alone left popped-out panes, and so the app, running.
+      id: 'app.exit', label: 'Exit', category: 'Account',
+      description: 'Close every CodeDistill window, popped-out panes too, and stop the app',
+      hidden: () => !desktopApp,
+      run: exitApp,
+    },
+    {
       id: 'account.settings', label: 'Settings', category: 'Account',
       description: 'Models, appearance, input, indexing, workflow',
       shortcut: 'Mod+,',
@@ -844,8 +853,32 @@
   const HEADER_COMMANDS = ['view.needsReview', 'view.jobs'];
   // The menubar states its own order; '-' is a separator. An id nothing has
   // registered (yet) is left out, so a menu fills in as commands register.
+  /** The desktop app, which File → Exit can stop. */
+  let desktopApp = $state(false);
+  let exiting = $state(false);
+  $effect(() => {
+    api.getAppInfo().then((a) => (desktopApp = a.desktop_app)).catch(() => (desktopApp = false));
+  });
+  async function exitApp() {
+    let running = 0;
+    try { running = (await api.getAppInfo()).running_jobs; } catch { /* ask nothing more */ }
+    if (running > 0 && !await confirmDialog(
+      `${running} job${running === 1 ? ' is' : 's are'} running. Exiting stops ${running === 1 ? 'it' : 'them'}; ` +
+      'a job that can resume carries on where it stopped the next time CodeDistill starts.',
+      { title: 'Exit CodeDistill', confirmLabel: 'Exit' })) return;
+    try {
+      exiting = true;
+      // The server closes the browser, and with it every window: this one
+      // and every popped-out pane. Their places are kept for next time.
+      await api.exitApp();
+    } catch (e) {
+      exiting = false;
+      await alertDialog(e instanceof Error ? e.message : String(e), { title: 'Could not exit' });
+    }
+  }
+
   const MENUS: Menu[] = [
-    { label: 'File', items: ['project.new', 'scratchpad.new', '-', 'scratchpad.upload', 'scratchpad.export', '-', 'account.settings'] },
+    { label: 'File', items: ['project.new', 'scratchpad.new', '-', 'scratchpad.upload', 'scratchpad.export', '-', 'account.settings', '-', 'app.exit'] },
     { label: 'Edit', items: ['scratchpad.group', 'scratchpad.clearSelection', '-', 'scratchpad.findDuplicates', 'scratchpad.archived', 'scratchpad.showHidden'] },
     { label: 'View', items: ['view.palette', '-', 'view.drawer', 'view.needsReview', 'view.jobs', 'view.changes', 'view.lists', 'view.search', 'view.ask',
       '-', 'scratchpad.viewCanvas', 'scratchpad.viewList', 'scratchpad.viewCalendar', 'scratchpad.viewKanban', 'scratchpad.filters',
@@ -1944,6 +1977,11 @@
     </span>
     <!-- Menus, from the command registry (docs/design/menubar.md). -->
     <MenuBar menus={MENUS} compact={stripW < 950} />
+    {#if exiting}
+      <!-- Between choosing Exit and the browser closing: a moment, but one
+           where clicking anything would be lost. -->
+      <div class="exiting" role="status">Closing CodeDistill…</div>
+    {/if}
     <div class="where">
       <Picker
         items={orderProjects(projects)}
@@ -2432,6 +2470,10 @@
 </main>
 
 <style>
+  .exiting {
+    position: fixed; inset: 0; z-index: 10000; display: grid; place-items: center;
+    background: color-mix(in srgb, var(--p-1a1a1a) 85%, transparent); color: var(--p-e0e0e0); font-size: 0.95rem;
+  }
   /* Global activity bar (item #20): an indeterminate sliding bar at the very
      top whenever any API request is in flight — instant "something's happening"
      feedback for every async action, app-wide. */

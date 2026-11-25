@@ -124,6 +124,11 @@ type Server struct {
 	queueStop context.CancelFunc
 	queueDone chan struct{}
 
+	// exit stops a desktop app, browser and all (app_exit.go); nil on a
+	// server people reach from their own browsers.
+	exit   func()
+	exitMu sync.Mutex
+
 	// machine samples CPU, memory and GPU for the Jobs pane, only while
 	// someone looks (jobs_analytics.go).
 	machine     *machine.Sampler
@@ -699,6 +704,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/jobs/slots", s.jobSlotsView)
 	mux.HandleFunc("GET /api/v1/jobs/analytics", s.jobsAnalytics)
 	mux.HandleFunc("GET /api/v1/machine", s.machineView)
+	mux.HandleFunc("GET /api/v1/app", s.appInfo)
+	mux.HandleFunc("POST /api/v1/app/exit", s.appExit)
 	mux.HandleFunc("GET /api/v1/model-vendors", s.listVendors)
 	mux.HandleFunc("POST /api/v1/model-providers/discover", s.discoverModels)
 	mux.HandleFunc("GET /api/v1/workflow-workers", s.listWorkers)

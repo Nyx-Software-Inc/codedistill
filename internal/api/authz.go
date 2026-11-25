@@ -92,6 +92,7 @@ var routeRules = map[string]routeRule{
 	// Workflows: which models their steps run on.
 	"PUT /api/v1/workflows/{id}/steps/{ordinal}/provider": {perm: domain.PermDesignWorkflows},
 	"PUT /api/v1/workflows/{id}/coordination":             {perm: domain.PermDesignWorkflows},
+	"POST /api/v1/app/exit":                               {perm: domain.PermAdminister},
 	"PUT /api/v1/workflow-workers/{type}":                 {perm: domain.PermDesignWorkflows},
 
 	// Members and roles.

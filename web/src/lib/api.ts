@@ -2190,6 +2190,13 @@ export interface MachineView {
   models_error?: string;
 }
 export const getMachine = () => req<MachineView>('GET', '/machine');
+
+/** Whether this is the desktop app (File → Exit is offered) and how many jobs
+ *  Exit would stop. */
+export interface AppInfo { desktop_app: boolean; running_jobs: number; }
+export const getAppInfo = () => req<AppInfo>('GET', '/app');
+/** Stops the desktop app: every window, popped-out panes too, and the server. */
+export const exitApp = () => req<{ status: string }>('POST', '/app/exit');
 export const resumeJob = (jobId: string) => req<QueuePlace>('POST', `/jobs/${jobId}/resume`);
 export const setJobPriority = (jobId: string, priority: JobPriority) =>
   req<QueuePlace>('PUT', `/jobs/${jobId}/priority`, { priority });
